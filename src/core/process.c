@@ -1,0 +1,264 @@
+/**
+ * @file process.c
+ * @brief 进程管理和虚拟内存区域(VMA)操作核心模块
+ * 
+ * 负责进程生命周期的完整管理，包括：
+ * - 进程哈希表的创建、查找和维护
+ * - 进程内存映射(/proc/[pid]/maps)的解析和缓存
+ * - 虚拟内存区域(VMA)的红黑树管理
+ * - 死进程的自动检测和清理
+ * - ELF文件引用的自动释放
+ * 
+ * 关键数据结构：
+ * - process_info: 进程的完整运行时画像
+ * - virtual_memory_area: 进程地址空间的连续区间
+ * - process_hash_table: PID到进程信息的O(1)查找映射
+ * 
+ * 内存管理：
+ * - 使用哈希表+红黑树实现高效查找
+ * - 完善的引用计数和自动清理机制
+ * - 支持进程退出的优雅清理
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+
+#include "../../include/header.h"
+#include "../../include/hash.h"
+#include "../../include/rbtree.h"
+#include "../../include/config.h"
+
+/**
+ * @brief 在进程哈希表中查找指定PID的进程
+ * @param table 进程哈希表指针
+ * @param pid 要查找的进程ID
+ * @return struct process_info* 找到的进程信息，未找到返回NULL
+ * 
+ * 查找算法：
+ * 1. 使用PID哈希值计算桶索引
+ * 2. 在冲突链表中顺序查找
+ * 3. 时间复杂度：O(1)平均，O(n)最坏情况
+ * 
+ * 哈希函数：hash_pid() - 将PID均匀分布在0-1023范围内
+ */
+struct process_info* find_process(struct process_hash_table* table, int pid) {
+    unsigned int index = hash_pid(pid);
+    struct process_hash_node* node = table->nodes[index];
+    
+    while (node) {
+        if (node->process_data.process_id == pid) {
+            return &node->process_data;
+        }
+        node = node->next_node;
+    }
+    return NULL;
+}
+
+/**
+ * @brief 查找或创建进程信息（惰性加载模式）
+ * @param process_table 进程哈希表指针
+ * @param pid 进程ID
+ * @return struct process_info* 进程信息，失败返回NULL
+ * 
+ * 工作流程：
+ * 1. 先在哈希表中查找，找到直接返回
+ * 2. 未找到时创建新的进程节点
+ * 3. 解析/proc/[pid]/maps获取内存映射信息
+ * 4. 将新进程插入哈希表
+ * 
+ * 内存分配：
+ * - process_hash_node: 进程节点
+ * - VMA树节点: 动态创建，包含在parse_process_memory_maps()中
+ * 
+ * 错误处理：
+ * - 内存分配失败：返回NULL
+ * - 内存映射解析失败：释放已分配内存
+ */
+struct process_info* find_new_process(struct process_hash_table* process_table, int pid) {
+    struct process_info* proc = find_process(process_table, pid);
+    if (proc) {
+        return proc;  // 进程已存在，直接返回缓存结果
+    }
+
+    // 创建新的进程节点
+    struct process_hash_node* new_node = (struct process_hash_node*)calloc(1, sizeof(struct process_hash_node));
+    if (!new_node) {
+        perror("Failed to allocate memory for new process node");
+        return NULL;
+    }
+    
+    // 初始化进程基本信息
+    new_node->process_data.process_id = pid;
+    new_node->process_data.memory_map_tree = RB_ROOT;  // 初始化红黑树根节点
+
+    // 解析进程内存映射，填充VMA树
+    if (parse_process_memory_maps(&new_node->process_data) != 0) {
+        free(new_node);
+        return NULL;
+    }
+
+    // 插入进程到哈希表，头插法处理冲突
+    unsigned int index = hash_pid(pid);
+    new_node->next_node = process_table->nodes[index];
+    process_table->nodes[index] = new_node;
+
+    return &new_node->process_data;
+}
+
+/**
+ * @brief 在进程的VMA树中查找指定地址所属的内存区域
+ * @param proc 进程信息指针
+ * @param real_addr 要查找的内存地址
+ * @return struct virtual_memory_area* VMA信息，未找到返回NULL
+ * 
+ * 查找算法：
+ * 1. 使用红黑树实现O(log n)查找
+ * 2. 比较地址与VMA的起始和结束地址
+ * 3. 支持匿名内存映射（如heap、stack）的查找
+ * 
+ * 地址范围验证：
+ * - 检查地址是否在VMA的[start_addr, end_addr)范围内
+ * - 支持文件映射和匿名映射
+ * 
+ * 典型场景：
+ * - 代码段：/usr/bin/nginx
+ * - 共享库：/lib/x86_64-linux-gnu/libc.so.6
+ * - 堆：[heap]
+ * - 栈：[stack]
+ */
+struct virtual_memory_area* find_vma_from_process(struct process_info* proc, unsigned long real_addr) {
+    if (!proc) return NULL;
+    struct rb_node* node = proc->memory_map_tree.rb_node;
+
+    while (node) {
+        struct virtual_memory_area* vma_info = rb_entry(node, struct virtual_memory_area, vm_rb_node);
+
+        if (real_addr < vma_info->start_addr)
+            node = node->rb_left;  // 地址在左子树
+        else if (real_addr >= vma_info->end_addr)
+            node = node->rb_right;  // 地址在右子树
+        else
+            return vma_info;  // 找到包含地址的VMA
+    }
+    return NULL;  // 地址不在任何已知VMA范围内
+}
+
+/**
+ * @brief 检查指定PID的进程是否仍然存活
+ * @param pid 进程ID
+ * @return bool true=进程存活，false=进程已退出
+ * 
+ * 实现原理：
+ * - 使用kill(pid, 0)系统调用检查进程存在性
+ * - 不会向进程发送实际信号，仅检查权限和进程存在
+ * - 适用于非root用户（检查自身进程）
+ */
+bool is_process_alive(int pid) {
+    return (kill(pid, 0) == 0);
+}
+
+/**
+ * @brief 定期清理已退出的进程及其资源
+ * @param sys 系统上下文指针
+ * 
+ * 清理流程：
+ * 1. 遍历所有哈希桶
+ * 2. 检查每个进程的存活状态
+ * 3. 清理已退出进程的所有资源：
+ *    - 释放ELF文件引用（调用release_elf）
+ *    - 释放进程名称、命令行、路径内存
+ *    - 释放VMA红黑树
+ *    - 释放进程节点本身
+ * 4. 处理哈希链表中的节点移除
+ * 
+ * 线程安全：应在主线程中调用，避免并发访问
+ * 触发频率：由global_config.cleanup_interval配置（默认5秒）
+ */
+void cleanup_dead_processes(struct system_context *sys) {
+    extern struct profiling_config global_config;
+    
+    for (int i = 0; i < HASHTABLE_SIZE; i++) {
+        struct process_hash_node* node = sys->process_table->nodes[i];
+        struct process_hash_node* prev = NULL;
+        
+        while (node) {
+            if (!is_process_alive(node->process_data.process_id)) {
+                if (global_config.verbose) {
+                    printf("Cleaning up dead process: %d\n", node->process_data.process_id);
+                }
+                
+                // 清理该进程引用的所有ELF文件
+                struct rb_root* vma_root = &node->process_data.memory_map_tree;
+                struct rb_node* rb_node = rb_first(vma_root);
+                while (rb_node) {
+                    struct virtual_memory_area* vma = rb_entry(rb_node, struct virtual_memory_area, vm_rb_node);
+                    if (vma->mapping_name) {
+                        release_elf(sys->elf_cache, vma->mapping_name);  // 减少ELF引用计数
+                    }
+                    rb_node = rb_next(rb_node);
+                }
+
+                // 从哈希链表中移除节点
+                struct process_hash_node* temp = node;
+                if (prev) {
+                    prev->next_node = node->next_node;
+                    node = prev->next_node;
+                } else {
+                    sys->process_table->nodes[i] = node->next_node;
+                    node = sys->process_table->nodes[i];
+                }
+
+                // 释放进程相关内存
+                free(temp->process_data.process_name);
+                free(temp->process_data.command_line);
+                free(temp->process_data.executable_path);
+                free_vma_tree(&temp->process_data.memory_map_tree);  // 释放VMA红黑树
+                free(temp);
+            } else {
+                prev = node;
+                node = node->next_node;
+            }
+        }
+    }
+}
+
+/**
+ * @brief 释放整个进程哈希表及其所有内容
+ * @param hash_table 要释放的哈希表指针
+ * 
+ * 清理操作：
+ * 1. 遍历所有哈希桶（0-1023）
+ * 2. 释放每个桶中的链表节点
+ * 3. 释放每个进程的所有关联内存
+ * 4. 释放哈希表结构本身
+ * 
+ * 安全性：
+ * - 支持NULL指针安全调用
+ * - 确保所有内存都被正确释放
+ * - 处理可能的循环引用（如ELF文件引用已在cleanup_dead_processes中处理）
+ */
+void free_process_hash_table(struct process_hash_table *hash_table) {
+    if (!hash_table) return;
+    
+    for (int i = 0; i < HASHTABLE_SIZE; i++) {
+        struct process_hash_node* node = hash_table->nodes[i];
+        while (node) {
+            struct process_hash_node* temp = node;
+            node = node->next_node;
+            
+            // 释放进程相关的所有字符串内存
+            free(temp->process_data.process_name);
+            free(temp->process_data.command_line);
+            free(temp->process_data.executable_path);
+            
+            // 释放VMA红黑树
+            free_vma_tree(&temp->process_data.memory_map_tree);
+            
+            free(temp);
+        }
+    }
+    free(hash_table);
+}
