@@ -11,8 +11,6 @@
 #include <asm/perf_regs.h>
 #include <sched.h>
 #include <pthread.h>
-#include <sys/mman.h>
-#include <stdatomic.h>
 
 #include "../include/perf.h"
 #include "../include/config.h"
@@ -27,18 +25,25 @@ static long perf_event_open_syscall(struct perf_event_attr *hw_event, pid_t pid,
 static struct perf_event_attr build_perf_attr(const struct profiling_config* config) {
     struct perf_event_attr pe;
     memset(&pe, 0, sizeof(struct perf_event_attr));
-    
-    pe.type = PERF_TYPE_SOFTWARE;
     pe.size = sizeof(struct perf_event_attr);
-    pe.config = PERF_COUNT_SW_CPU_CLOCK;
+
+    if (config->use_lbr) {
+        // LBR模式: 使用硬件事件，采集分支记录
+        pe.type = PERF_TYPE_HARDWARE;
+        pe.config = PERF_COUNT_HW_INSTRUCTIONS;
+        // 使用callchain + LBR + reg进行栈回溯，不依赖libunwind
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | 
+                         PERF_SAMPLE_BRANCH_STACK | PERF_SAMPLE_REGS_USER;
+    } else {
+        // 默认模式: 基于软件时钟
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER;
+    }
     
     // 使用频率模式替代周期模式
     pe.freq = 1;
     pe.sample_freq = config->sampling_frequency;
-    
-    // 使用callchain + LBR + reg进行栈回溯，不依赖libunwind
-    pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | 
-                     PERF_SAMPLE_BRANCH_STACK | PERF_SAMPLE_REGS_USER;
     
     pe.disabled = 1;
     pe.exclude_kernel = 0;  // 全量采集，包含用户态和内核态
@@ -51,33 +56,7 @@ static int create_perf_event(struct perf_event_attr *pe, int cpu, pid_t target_p
     return perf_event_open_syscall(pe, target_pid, cpu, -1, 0);
 }
 
-// 设置事件内存映射
-static int setup_event_mmap(struct perf_event_fd *event) {
-    size_t page_size = sysconf(_SC_PAGESIZE);
-    size_t mmap_size = (1 + 16) * page_size; // 1页头 + 16页数据 (64KB)
 
-    // 使用MAP_SHARED按需映射，替代MAP_POPULATE预加载
-    void *mmap_base = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED,
-                          event->fd, 0);
-    if (mmap_base == MAP_FAILED) {
-        fprintf(stderr, "Error mmap'ing perf event for CPU %d: %s\n",
-                event->cpu, strerror(errno));
-        return -1;
-    }
-
-    event->mmap_base = mmap_base;
-    event->mmap_size = mmap_size;
-    event->header = (struct perf_event_mmap_page *)mmap_base;
-
-    // 设置环形缓冲区水印，当数据达到75%时唤醒
-    uint64_t wakeup_watermark = (mmap_size - page_size) * 3 / 4;
-    (void)wakeup_watermark; // 避免未使用警告
-
-    // 这里可以设置实际的水印值，但暂时保持简单实现
-
-    return 0;
-}
 
 // 初始化管理器结构
 static struct perf_event_manager* initialize_manager(int num_cpus) {
@@ -107,9 +86,6 @@ static void cleanup_events(struct perf_event_manager* manager, int last_event) {
         if (manager->events[i].fd >= 0) {
             ioctl(manager->events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
             close(manager->events[i].fd);
-        }
-        if (manager->events[i].mmap_base) {
-            munmap(manager->events[i].mmap_base, manager->events[i].mmap_size);
         }
     }
     free(manager->events);
@@ -158,16 +134,6 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
         // 设置非阻塞模式
         fcntl(fd, F_SETFL, O_NONBLOCK);
         
-        if (setup_event_mmap(&manager->events[cpu]) != 0) {
-            cleanup_events(manager, cpu + 1);
-            return NULL;
-        }
-        
-        // 设置CPU亲和性
-        if (perf_event_bind_to_cpu(&manager->events[cpu], cpu) != 0) {
-            fprintf(stderr, "Warning: Failed to bind CPU %d affinity\n", cpu);
-        }
-        
         // 启用事件
         ioctl(fd, PERF_EVENT_IOC_RESET, 0);
         ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
@@ -183,16 +149,13 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
 
 // 清理性能事件管理器
 void perf_event_cleanup_manager(struct perf_event_manager* manager) {
-    if (!manager) return;
+    if (!manager) return; 
     
     if (manager->events) {
         for (int i = 0; i < manager->num_events; i++) {
             if (manager->events[i].fd >= 0) {
                 ioctl(manager->events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
                 close(manager->events[i].fd);
-            }
-            if (manager->events[i].mmap_base) {
-                munmap(manager->events[i].mmap_base, manager->events[i].mmap_size);
             }
         }
         free(manager->events);
@@ -223,82 +186,49 @@ struct perf_event_fd* perf_event_init(int *num_cpus) {
 }
 
 void perf_event_cleanup(struct perf_event_fd *events, int num_cpus) {
-    if (!events) return;
+    if (!events) return; 
     
     for (int i = 0; i < num_cpus; i++) {
         if (events[i].fd >= 0) {
             ioctl(events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
             close(events[i].fd);
         }
-        if (events[i].mmap_base) {
-            munmap(events[i].mmap_base, events[i].mmap_size);
-        }
     }
     free(events);
 }
 
-// CPU亲和性绑定 - 确保CPU本地处理
-int perf_event_bind_to_cpu(struct perf_event_fd *event, int cpu) {
-    if (!event) return -1;
-    
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(cpu, &cpuset);
-    
-    // 设置线程CPU亲和性
-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
-        perror("pthread_setaffinity_np");
-        return -1;
-    }
-    
-    return 0;
-}
-
-// 设置CPU亲和性
-int perf_event_set_cpu_affinity(int cpu) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(cpu, &cpuset);
-    
-    return sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-}
-
-// 基于参考实现consume_all_perf_event的lock-free ring buffer处理
+// 基于read的ring buffer处理
 int perf_event_process_ring_buffer(struct perf_event_fd *event, 
                                      void (*handler)(struct perf_event_header *, void *), 
                                      void *context) {
-    if (!event || !handler || !event->header) {
+    if (!event || !handler) {
         return 0;
     }
 
-    struct perf_event_mmap_page *header = event->header;
-    char *base = (char *)event->mmap_base + sysconf(_SC_PAGESIZE);
-    
-    // 使用atomic_load确保原子读取
-    uint64_t head = __atomic_load_n(&header->data_head, __ATOMIC_SEQ_CST);
-    uint64_t tail = __atomic_load_n(&header->data_tail, __ATOMIC_SEQ_CST);
-    
-    if (head == tail) {
-        return 0; // 没有新数据
+    char buf[4096];
+    ssize_t bytes_read = read(event->fd, buf, sizeof(buf));
+
+    if (bytes_read <= 0) {
+        return 0; // 没有数据或发生错误
     }
-    
-    uint64_t buffer_size = event->mmap_size - sysconf(_SC_PAGESIZE);
-    char *data_start = base;
-    
-    while (tail != head) {
-        struct perf_event_header *event_header = (struct perf_event_header *)(data_start + (tail % buffer_size));
-        
-        // 检查事件是否完整
-        if (event_header->size == 0) {
+
+    char *ptr = buf;
+    char *end = buf + bytes_read;
+    int processed_count = 0;
+
+    while (ptr < end) {
+        struct perf_event_header *header = (struct perf_event_header *)ptr;
+        if (header->size == 0 || (ptr + header->size > end)) {
+            // 事件不完整，停止处理
             break;
         }
         
-        handler(event_header, context);
-        tail += event_header->size;
+        handler(header, context);
+        ptr += header->size;
+        processed_count++;
     }
-    
-    __atomic_store_n(&header->data_tail, head, __ATOMIC_SEQ_CST);
-    return 1;
+
+    return processed_count > 0 ? 1 : 0;
 }
 
 // sample_consumer_callback 是一个包装器，用于将 perf_event_header 转换为 sample_data
