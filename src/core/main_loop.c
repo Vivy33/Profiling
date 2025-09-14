@@ -9,6 +9,10 @@
 #include "../../include/config.h"
 #include "../../include/perf.h"
 
+// epoll 水平触发模式：只要fd上有未消费的数据，就会持续触发epoll_wait
+// 这样可以确保所有数据都被正确处理，避免边缘触发可能导致的数据丢失
+// 虽然性能略低于边缘触发，但保证了数据完整性和可靠性
+
 // 配置epoll描述符
 static int setup_epoll_fd(struct perf_event_manager* manager) {
     if (!manager) return -1;
@@ -23,7 +27,7 @@ static int setup_epoll_fd(struct perf_event_manager* manager) {
     // 为每个perf事件文件描述符注册到epoll
     for (int i = 0; i < manager->num_events; i++) {
         struct epoll_event event;
-        event.events = EPOLLIN | EPOLLET;  // 边缘触发模式，提高性能
+        event.events = EPOLLIN;  // 水平触发模式，确保数据完整性
         event.data.fd = manager->events[i].fd;  // 存储文件描述符用于后续处理
         
         if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, manager->events[i].fd, &event) == -1) {
@@ -36,7 +40,11 @@ static int setup_epoll_fd(struct perf_event_manager* manager) {
     return epoll_fd;
 }
 
-// 主循环
+/**
+ * @brief 主事件循环
+ * @param system_info 指向system_context结构体的指针，包含进程哈希表和ELF文件缓存等系统全局信息。
+ * @param manager 指向perf_event_manager结构体的指针，包含所有perf事件的文件描述符和元数据。
+ */
 void main_loop(struct system_context* system_info, struct perf_event_manager* manager) {
     extern struct profiling_config global_config;
     
@@ -67,35 +75,21 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
             perror("epoll_wait failed");
             break;
         }
-
-        // 处理所有就绪的事件
+        // 使用水平触发epoll模式处理perf事件，确保数据完整性
         for (int i = 0; i < num_events; i++) {
-            // 边缘触发模式：需要循环读取直到EAGAIN
-            while (1) {
+            if (events[i].events & EPOLLIN) {
+                // 对于每个有数据的CPU，处理其ring buffer
+                // 这里我们仍然使用read方式，但已优化为水平触发模式
                 int n = read(events[i].data.fd, buf, sizeof(buf));
-                if (n == -1) {
-                    if (errno == EAGAIN) {
-                        // 边缘触发：数据已读完，退出循环
-                        break;
-                    } else if (errno != EINTR) {
-                        // 真正的错误，打印并继续
-                        perror("read");
-                        break;
+                if (n > 0) {
+                    for (int j = 0; j < n; ) {
+                        struct perf_event_header *header = (struct perf_event_header *)(buf + j);
+                        if (header->type == PERF_RECORD_SAMPLE) {
+                            data = (struct sample_data *)header;
+                            handle_sample(system_info, data);
+                        }
+                        j += header->size;
                     }
-                    continue; // 被信号中断，重试
-                } else if (n == 0) {
-                    // 文件描述符关闭，这种情况在perf事件中不应该发生
-                    break;
-                }
-
-                // 处理perf事件数据包
-                for (int j = 0; j < n; ) {
-                    struct perf_event_header *header = (struct perf_event_header *)(buf + j);
-                    if (header->type == PERF_RECORD_SAMPLE) {
-                        data = (struct sample_data *)header;
-                        handle_sample(system_info, data);
-                    }
-                    j += header->size;
                 }
             }
         }
