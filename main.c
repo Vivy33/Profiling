@@ -63,7 +63,7 @@ int main(int argc, char* argv[]) {
     /**
      * 阶段1：配置解析
      * 解析命令行参数，填充global_config结构
-     * 支持参数：--mode, --pid, --exec, --pids, --execs, --frequency, --kernel, --verbose
+     * 支持参数：--mode, --pid, --exec, --pids, --execs, --frequency, --filter, --cleanup, --verbose
      */
     if (parse_command_line(argc, argv, &global_config) != 0) {
         fprintf(stderr, "Error: Failed to parse command line arguments\n");
@@ -82,16 +82,6 @@ int main(int argc, char* argv[]) {
         free_config(&global_config);
         return 1;
     }
-
-    /**
-     * 阶段3：配置展示
-     * 打印当前监控配置的详细信息，包括：
-     * - 监控模式和目标进程列表
-     * - 采样频率和周期设置
-     * - 内核空间过滤策略
-     * - 清理间隔和详细输出选项
-     */
-    print_config_summary(&global_config);
 
     /**
      * 阶段4：perf事件初始化
