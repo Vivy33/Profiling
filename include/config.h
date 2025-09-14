@@ -17,13 +17,13 @@ struct profiling_config {
     enum filter_mode filter_mode;       // 显示过滤模式
     int cleanup_interval;               // 死进程清理间隔 (秒)
     bool verbose;                       // 详细输出
+    bool use_lbr;                       // 是否启用LBR
 };
 
 // 函数声明
 void print_usage(const char* program_name);
 int parse_command_line(int argc, char* argv[], struct profiling_config* config);
 int validate_config(struct profiling_config* config);
-void free_config(struct profiling_config* config);
 
 // 默认配置
 #define DEFAULT_SAMPLING_FREQUENCY 30    // 30Hz
