@@ -64,7 +64,9 @@ void perf_event_cleanup(struct perf_event_fd *events, int num_cpus);
  * @param handler 处理perf_event_header的回调函数
  * @return 1表示处理了数据，0表示没有新数据
  */
-int perf_event_process_ring_buffer(struct perf_event_fd *event, void (*handler)(struct perf_event_header *));
+int perf_event_process_ring_buffer(struct perf_event_fd *event, 
+                                     void (*handler)(struct perf_event_header *, void *), 
+                                     void *context);
 
 /**
  * @brief 消费所有CPU上的perf采样事件
