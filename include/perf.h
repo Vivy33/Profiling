@@ -3,23 +3,37 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+#include <linux/perf_event.h>
+#include <sys/mman.h>
 
-// Forward declaration
+// 前向声明
 struct profiling_config;
+struct sample_data;
 
-// Perf event file descriptor for a single CPU
+/**
+ * @brief 单个CPU的Perf事件文件描述符结构
+ * 
+ * 封装了与单个CPU上的perf事件相关的所有信息，包括文件描述符、
+ * CPU ID、目标进程PID、内存映射信息等。
+ */
 struct perf_event_fd {
-    int fd;
-    int cpu;
-    pid_t target_pid;  // 目标进程PID (-1表示所有进程)
-    // Add other necessary fields, e.g., for mmap buffer
+    int fd;                   // Perf事件的文件描述符
+    int cpu;                  // 该事件绑定的CPU ID
+    pid_t target_pid;         // 目标进程PID (-1表示监控所有进程)
+    void *mmap_base;          // mmap映射的基地址，用于访问ring buffer
+    size_t mmap_size;         // mmap映射区域的大小
+    struct perf_event_mmap_page *header; // perf事件的mmap页头，包含元数据
 };
 
-// Perf event manager for different profiling modes
+/**
+ * @brief Perf事件管理器结构
+ * 
+ * 管理多个perf_event_fd，用于支持不同的性能分析模式（如系统级、多进程）。
+ */
 struct perf_event_manager {
-    struct perf_event_fd* events;
-    int num_events;
-    int num_cpus;
+    struct perf_event_fd* events; // 指向perf_event_fd数组的指针
+    int num_events;               // 当前管理的事件数量
+    int num_cpus;                 // 系统中的CPU数量
 };
 
 // 初始化性能事件（支持多种模式）
@@ -30,8 +44,49 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
 // 清理性能事件
 void perf_event_cleanup_manager(struct perf_event_manager* manager);
 
-// 兼容旧接口（系统模式）
+/**
+ * @brief 初始化性能事件（兼容旧接口，系统模式）
+ * @param num_cpus 输出参数，返回CPU数量
+ * @return 成功时返回perf_event_fd数组的指针，失败时返回NULL
+ */
 struct perf_event_fd* perf_event_init(int *num_cpus);
+
+/**
+ * @brief 清理性能事件（兼容旧接口）
+ * @param events perf_event_fd数组的指针
+ * @param num_cpus CPU数量
+ */
 void perf_event_cleanup(struct perf_event_fd *events, int num_cpus);
+
+/**
+ * @brief 处理perf事件的环形缓冲区 - lock-free设计
+ * @param event 指向perf_event_fd结构体的指针
+ * @param handler 处理perf_event_header的回调函数
+ * @return 1表示处理了数据，0表示没有新数据
+ */
+int perf_event_process_ring_buffer(struct perf_event_fd *event, void (*handler)(struct perf_event_header *));
+
+/**
+ * @brief 消费所有CPU上的perf采样事件
+ * @param manager 指向perf_event_manager结构体的指针
+ * @param handler 处理sample_data的回调函数
+ * @return 处理的事件数量
+ */
+int perf_event_consume_samples(struct perf_event_manager *manager, void (*handler)(struct sample_data *));
+
+/**
+ * @brief 将perf事件绑定到指定的CPU，优化CPU亲和性
+ * @param event 指向perf_event_fd结构体的指针
+ * @param cpu 要绑定的CPU ID
+ * @return 0表示成功，非0表示失败
+ */
+int perf_event_bind_to_cpu(struct perf_event_fd *event, int cpu);
+
+/**
+ * @brief 设置当前线程的CPU亲和性
+ * @param cpu 要设置的CPU ID
+ * @return 0表示成功，非0表示失败
+ */
+int perf_event_set_cpu_affinity(int cpu);
 
 #endif // PERF_H
