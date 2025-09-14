@@ -39,6 +39,7 @@ void print_usage(const char* program_name) {
     printf("  --frequency=NUM    Sampling frequency in Hz (default: %d)\n", DEFAULT_SAMPLING_FREQUENCY);
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
+    printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
     printf("  --verbose          Enable verbose output\n");
     printf("  --help             Show this help message\n");
 }
@@ -56,6 +57,7 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->filter_mode = FILTER_ALL;
     config->cleanup_interval = DEFAULT_CLEANUP_INTERVAL;
     config->verbose = false;
+    config->use_lbr = false;
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -84,6 +86,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             }
         } else if (strcmp(argv[i], "--verbose") == 0) {
             config->verbose = true;
+        } else if (strcmp(argv[i], "--lbr") == 0) {
+            config->use_lbr = true;
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             exit(0);
@@ -125,14 +129,3 @@ int validate_config(struct profiling_config* config) {
     return 0;
 }
 
-/**
- * @brief 释放配置相关资源
- * @param config 配置结构体指针
- * 
- * 清理配置占用的资源，当前实现为空，因为配置结构体
- * 只包含基本数据类型，没有动态分配的内存
- */
-void free_config(struct profiling_config* config) {
-    // 配置结构体只包含基本数据类型，无需释放资源
-    (void)config; // 避免未使用参数警告
-}
