@@ -79,7 +79,6 @@ int main(int argc, char* argv[]) {
      */
     if (validate_config(&global_config) != 0) {
         fprintf(stderr, "Error: Configuration validation failed\n");
-        free_config(&global_config);
         return 1;
     }
 
@@ -96,7 +95,6 @@ int main(int argc, char* argv[]) {
     if (!manager) {
         fprintf(stderr, "Error: Failed to initialize perf events.\n");
         fprintf(stderr, "Possible causes: insufficient permissions, perf subsystem disabled\n");
-        free_config(&global_config);
         return 1;
     }
 
@@ -116,7 +114,6 @@ int main(int argc, char* argv[]) {
     if (initialize_system(&system_info)) {
         fprintf(stderr, "Error: Failed to initialize system context\n");
         perf_event_cleanup_manager(manager);
-        free_config(&global_config);
         return 1;
     }
 
@@ -142,7 +139,6 @@ int main(int argc, char* argv[]) {
      */
     cleanup_system(&system_info);
     perf_event_cleanup_manager(manager);
-    free_config(&global_config);
 
     return 0;
 }

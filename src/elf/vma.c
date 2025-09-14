@@ -201,13 +201,6 @@ int parse_process_memory_maps(struct process_info* proc) {
     return 0;
 }
 
-// 打印VMA信息
-void print_virtual_memory_area(const struct virtual_memory_area* vma_info) {
-    printf("VMA Start: 0x%lx, End: 0x%lx, Offset: 0x%lx, Flags: %x, Name: %s\n",
-           vma_info->start_addr, vma_info->end_addr, vma_info->file_offset, vma_info->vm_flags, 
-           vma_info->mapping_name ? vma_info->mapping_name : "[anonymous]");
-}
-
 /**
  * @brief 将运行时地址转换为ELF文件中的相对偏移
  * @param real_addr 运行时虚拟地址（来自perf采样）

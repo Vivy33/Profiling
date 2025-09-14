@@ -20,9 +20,6 @@ struct perf_event_fd {
     int fd;                   // Perf事件的文件描述符
     int cpu;                  // 该事件绑定的CPU ID
     pid_t target_pid;         // 目标进程PID (-1表示监控所有进程)
-    void *mmap_base;          // mmap映射的基地址，用于访问ring buffer
-    size_t mmap_size;         // mmap映射区域的大小
-    struct perf_event_mmap_page *header; // perf事件的mmap页头，包含元数据
 };
 
 /**
@@ -75,20 +72,5 @@ int perf_event_process_ring_buffer(struct perf_event_fd *event,
  * @return 处理的事件数量
  */
 int perf_event_consume_samples(struct perf_event_manager *manager, void (*handler)(struct sample_data *));
-
-/**
- * @brief 将perf事件绑定到指定的CPU，优化CPU亲和性
- * @param event 指向perf_event_fd结构体的指针
- * @param cpu 要绑定的CPU ID
- * @return 0表示成功，非0表示失败
- */
-int perf_event_bind_to_cpu(struct perf_event_fd *event, int cpu);
-
-/**
- * @brief 设置当前线程的CPU亲和性
- * @param cpu 要设置的CPU ID
- * @return 0表示成功，非0表示失败
- */
-int perf_event_set_cpu_affinity(int cpu);
 
 #endif // PERF_H
