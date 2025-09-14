@@ -77,6 +77,7 @@ struct elf_symbol_collection {
 // ELF文件结构体 - 表示一个ELF可执行文件或库文件
 struct elf_file {
     char* file_path;          // 文件完整路径
+    char* build_id;           // Build ID, a unique identifier for the ELF file
     int reference_count;      // 引用计数（用于缓存管理）
     struct elf_symbol_collection* symbols; // ELF文件中的符号集合
     Elf64_Ehdr elf_header;    // ELF文件头
