@@ -264,7 +264,9 @@ int perf_event_set_cpu_affinity(int cpu) {
 }
 
 // 基于参考实现consume_all_perf_event的lock-free ring buffer处理
-int perf_event_process_ring_buffer(struct perf_event_fd *event, void (*handler)(struct perf_event_header *)) {
+int perf_event_process_ring_buffer(struct perf_event_fd *event, 
+                                     void (*handler)(struct perf_event_header *, void *), 
+                                     void *context) {
     if (!event || !handler || !event->header) {
         return 0;
     }
@@ -273,8 +275,8 @@ int perf_event_process_ring_buffer(struct perf_event_fd *event, void (*handler)(
     char *base = (char *)event->mmap_base + sysconf(_SC_PAGESIZE);
     
     // 使用atomic_load确保原子读取
-    uint64_t head = atomic_load(&header->data_head);
-    uint64_t tail = atomic_load(&header->data_tail);
+    uint64_t head = __atomic_load_n(&header->data_head, __ATOMIC_SEQ_CST);
+    uint64_t tail = __atomic_load_n(&header->data_tail, __ATOMIC_SEQ_CST);
     
     if (head == tail) {
         return 0; // 没有新数据
@@ -291,12 +293,20 @@ int perf_event_process_ring_buffer(struct perf_event_fd *event, void (*handler)(
             break;
         }
         
-        handler(event_header);
+        handler(event_header, context);
         tail += event_header->size;
     }
     
-    atomic_store(&header->data_tail, head);
+    __atomic_store_n(&header->data_tail, head, __ATOMIC_SEQ_CST);
     return 1;
+}
+
+// sample_consumer_callback 是一个包装器，用于将 perf_event_header 转换为 sample_data
+static void sample_consumer_callback(struct perf_event_header *header, void *context) {
+    void (*actual_handler)(struct sample_data *) = context;
+    if (header->type == PERF_RECORD_SAMPLE) {
+        actual_handler((struct sample_data *)header);
+    }
 }
 
 // 处理所有采样事件
@@ -308,7 +318,8 @@ int perf_event_consume_samples(struct perf_event_manager *manager, void (*handle
     int processed = 0;
     for (int i = 0; i < manager->num_events; i++) {
         processed += perf_event_process_ring_buffer(&manager->events[i], 
-                                                   (void (*)(struct perf_event_header *))handler);
+                                                   sample_consumer_callback,
+                                                   handler);
     }
     return processed;
 }
