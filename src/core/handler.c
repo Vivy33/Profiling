@@ -47,23 +47,25 @@ void handle_sample(struct system_context *sys, struct sample_data *data) {
     extern struct profiling_config global_config;
     
     /**
-     * 步骤1：进程过滤
-     * 根据监控模式决定是否处理该进程：
-     * - 系统模式：处理所有进程
-     * - 目标模式：只处理指定PID的进程
-     * - 多目标模式：只处理指定PID列表中的进程
-     * 
-     * 过滤逻辑：遍历目标进程列表，检查当前PID是否匹配
+     * 步骤1：地址空间过滤
+     * 根据配置决定是否过滤内核态或用户态地址：
+     * - FILTER_ALL：处理所有地址
+     * - FILTER_USER：只处理用户态地址(0x0000-0x7FFF FFFF FFFF FFFF)
+     * - FILTER_KERNEL：只处理内核态地址(0xFFFF 8000 0000 0000-0xFFFF FFFF FFFF FFFF)
      */
-    if (global_config.mode == MODE_TARGET || global_config.mode == MODE_MULTI) {
-        bool is_target = false;
-        for (int i = 0; i < global_config.target_count; i++) {
-            if (data->pid == global_config.targets[i].pid) {
-                is_target = true;
-                break;
-            }
-        }
-        if (!is_target) return;
+    bool is_kernel_addr = (data->ip & 0x8000000000000000ULL) != 0;
+
+    switch (global_config.filter_mode) {
+        case FILTER_USER:
+            if (is_kernel_addr) return;
+            break;
+        case FILTER_KERNEL:
+            if (!is_kernel_addr) return;
+            break;
+        case FILTER_ALL:
+        default:
+            // 处理所有地址，不做过滤
+            break;
     }
 
     /**
@@ -96,12 +98,12 @@ void handle_sample(struct system_context *sys, struct sample_data *data) {
      * 步骤4：计算相对地址
      * 将运行时地址转换为ELF文件中的相对偏移：
      * 相对地址 = (运行时地址 - VMA起始地址) + 文件偏移
-     * 
+     *
      * 这个转换是必要的，因为运行时地址是虚拟地址，
      * 而ELF符号表中的地址是相对于文件开头的偏移
      */
     uint64_t rel_addr = get_relative_address(data->ip, vma_info);
-    
+
     /**
      * 步骤5：ELF文件查找或解析
      * 根据VMA对应的文件名获取ELF文件信息：
@@ -114,7 +116,7 @@ void handle_sample(struct system_context *sys, struct sample_data *data) {
         // ELF文件解析失败（可能文件不存在或格式错误）
         return;
     }
-    
+
     /**
      * 步骤6：符号查找
      * 在ELF文件的符号表中查找相对地址对应的函数名称：
@@ -123,7 +125,7 @@ void handle_sample(struct system_context *sys, struct sample_data *data) {
      * - 如果未找到符号，返回"unknown_function"
      */
     const char* symbol_name = find_symbol_name_from_elf(elf, rel_addr);
-    
+
     /**
      * 步骤7：结果输出
      * 根据详细输出标志决定输出格式：
