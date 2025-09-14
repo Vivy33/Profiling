@@ -143,7 +143,8 @@ int parse_process_memory_maps(struct process_info* proc) {
 
         /**
          * 解析单行格式：
-         * 起始地址-结束地址 权限 偏移 设备 节点号 文件名
+         * 起始地址      -   结束地址     权限  偏移     设备   节点号                      文件名
+         * 64fbac8a6000  -   64fbac8c7000 rw-p 00000000 00:00   0                          [heap]
          * 使用sscanf提取关键字段
          * %*s %*d - 跳过设备号和inode号字段
          */
@@ -157,9 +158,9 @@ int parse_process_memory_maps(struct process_info* proc) {
          * x - 可执行，映射到EXECUTE标志
          * p - 私有映射，s - 共享映射
          */
-        if (strchr(perm, 'r')) vma->vm_flags |= READ;
-        if (strchr(perm, 'w')) vma->vm_flags |= WRITE;
-        if (strchr(perm, 'x')) vma->vm_flags |= EXECUTE;
+        if (perm[0] == 'r') vma->vm_flags |= READ;
+        if (perm[1] == 'w') vma->vm_flags |= WRITE;
+        if (perm[2] == 'x') vma->vm_flags |= EXECUTE;
 
         /**
          * 复制映射文件名：
@@ -229,8 +230,8 @@ void print_virtual_memory_area(const struct virtual_memory_area* vma_info) {
  * 示例：
  * 运行时地址：0x7f8b3c45a280
  * VMA起始：0x7f8b3c400000
- * 文件偏移：0
- * 相对地址：0x45a280 - 0x400000 + 0 = 0x5a280
+ * 文件偏移：0x2000
+ * 相对地址：0x45a280 - 0x400000 + 0x2000 = 0x5c280
  */
 uint64_t get_relative_address(uint64_t real_addr, struct virtual_memory_area* vma) {
     if (!vma) {
