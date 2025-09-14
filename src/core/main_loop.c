@@ -40,6 +40,16 @@ static int setup_epoll_fd(struct perf_event_manager* manager) {
     return epoll_fd;
 }
 
+// process_sample_event 是一个回调函数，用于处理来自ring buffer的单个perf事件
+static void process_sample_event(struct perf_event_header *header, void *context) {
+    struct system_context *sys_info = (struct system_context *)context;
+    
+    // 我们只关心采样记录
+    if (header->type == PERF_RECORD_SAMPLE) {
+        handle_sample(sys_info, (struct sample_data *)header);
+    }
+}
+
 /**
  * @brief 主事件循环
  * @param system_info 指向system_context结构体的指针，包含进程哈希表和ELF文件缓存等系统全局信息。
@@ -54,10 +64,8 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
         return;
     }
 
-    // 为epoll_wait准备事件缓冲区，使用批量处理提高效率
+    // 为epoll_wait准备事件缓冲区
     struct epoll_event events[64];
-    char buf[4096];
-    struct sample_data *data;
     time_t last_cleanup_time = time(NULL);
 
     printf("Starting profiling with epoll... Press Ctrl+C to stop\n\n");
@@ -75,21 +83,22 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
             perror("epoll_wait failed");
             break;
         }
-        // 使用水平触发epoll模式处理perf事件，确保数据完整性
+        
+        // 高性能模式：epoll通知 + mmap直接消费
         for (int i = 0; i < num_events; i++) {
             if (events[i].events & EPOLLIN) {
-                // 对于每个有数据的CPU，处理其ring buffer
-                // 这里我们仍然使用read方式，但已优化为水平触发模式
-                int n = read(events[i].data.fd, buf, sizeof(buf));
-                if (n > 0) {
-                    for (int j = 0; j < n; ) {
-                        struct perf_event_header *header = (struct perf_event_header *)(buf + j);
-                        if (header->type == PERF_RECORD_SAMPLE) {
-                            data = (struct sample_data *)header;
-                            handle_sample(system_info, data);
-                        }
-                        j += header->size;
+                // 查找与文件描述符匹配的perf_event_fd
+                struct perf_event_fd *event_fd = NULL;
+                for (int j = 0; j < manager->num_events; j++) {
+                    if (manager->events[j].fd == events[i].data.fd) {
+                        event_fd = &manager->events[j];
+                        break;
                     }
+                }
+                
+                // 使用mmap的ring buffer处理函数消费数据
+                if (event_fd) {
+                    perf_event_process_ring_buffer(event_fd, process_sample_event, system_info);
                 }
             }
         }
@@ -104,3 +113,4 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
 
     close(epoll_fd);  // 清理epoll文件描述符
 }
+
