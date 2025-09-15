@@ -36,8 +36,14 @@
 
 #define PATH_MAX 4096
 
+// 静态辅助函数前向声明
 static char* get_elf_build_id(const char* filename);
 static void remove_elf(struct elf_file_cache* elf_table, const char* build_id);
+static struct elf_symbol_collection* get_elf_func_symbols_from_elf(Elf* e, struct elf_file* elf_info);
+static char* get_elf_build_id_from_elf(Elf* e);
+static Elf* elf_parser_init(const char* filename, int* out_fd);
+static void elf_parser_cleanup(Elf* e, int fd);
+
 
 // 辅助函数：通过build_id在哈希表中查找ELF文件
 static struct elf_file* find_elf_in_table(struct elf_file_cache* elf_table, const char* build_id) {
@@ -60,7 +66,17 @@ static void insert_elf_into_table(struct elf_file_cache* elf_table, struct elf_f
 }
 
 /**
- * @brief 查找或创建ELF文件对象
+ * @brief (重构后) 查找或创建ELF文件对象，确保每个文件只被解析一次。
+ * 
+ * 此函数是ELF缓存机制的核心。它首先尝试通过Build ID在缓存中查找ELF文件。
+ * 如果找到，则增加其引用计数并返回。
+ * 如果未找到，它将执行以下高效流程：
+ *   1. 调用 elf_parser_init() 打开文件并获取libelf句柄。
+ *   2. 使用此句柄，一次性提取Build ID和所有函数符号。
+ *   3. 创建一个新的elf_file对象，存入缓存并初始化引用计数为1。
+ *   4. 调用 elf_parser_cleanup() 清理资源。
+ * 这种方法避免了对同一文件的重复读取和解析，显著提升了性能。
+ *
  * @param sys 指向system_context结构体的指针，包含ELF文件缓存。
  * @param filename ELF文件的路径。
  * @return 成功时返回指向elf_file结构体的指针，失败时返回NULL。
@@ -70,23 +86,28 @@ struct elf_file* find_or_create_elf(struct system_context* sys, const char *file
         return NULL; // 忽略匿名内存区域或无效名称
     }
 
-    // 对于系统范围的性能分析，直接使用文件名
     char host_path[PATH_MAX];
     snprintf(host_path, sizeof(host_path), "%s", filename);
 
-    char* build_id = get_elf_build_id(host_path);
-    if (!build_id) {
+    int fd = -1;
+    Elf* e = elf_parser_init(host_path, &fd);
+    if (!e) {
         // 对于宿主进程或/proc/<pid>/root不可访问的情况，回退到原始路径
-        build_id = get_elf_build_id(filename);
-        if (!build_id) {
-            return NULL;
-        }
+        e = elf_parser_init(filename, &fd);
+        if (!e) return NULL;
+    }
+
+    char* build_id = get_elf_build_id_from_elf(e);
+    if (!build_id) {
+        elf_parser_cleanup(e, fd);
+        return NULL;
     }
 
     struct elf_file* elf_obj = find_elf_in_table(sys->elf_cache, build_id);
     if (elf_obj) {
         elf_obj->reference_count++;
-        free(build_id); // 不再需要
+        free(build_id);
+        elf_parser_cleanup(e, fd);
         return elf_obj;
     }
 
@@ -95,6 +116,7 @@ struct elf_file* find_or_create_elf(struct system_context* sys, const char *file
     if (!new_node) {
         perror("为new_node分配内存失败");
         free(build_id);
+        elf_parser_cleanup(e, fd);
         return NULL;
     }
 
@@ -104,27 +126,27 @@ struct elf_file* find_or_create_elf(struct system_context* sys, const char *file
         perror("为file_path复制字符串失败");
         free(new_node->elf_file_data.build_id);
         free(new_node);
+        elf_parser_cleanup(e, fd);
         return NULL;
     }
 
-    // 使用宿主路径解析ELF符号
-    new_node->elf_file_data.symbols = get_elf_func_symbols(host_path, &new_node->elf_file_data);
+    // 从同一个ELF句柄获取符号
+    new_node->elf_file_data.symbols = get_elf_func_symbols_from_elf(e, &new_node->elf_file_data);
     if (!new_node->elf_file_data.symbols) {
-        // 宿主进程的回退
-        new_node->elf_file_data.symbols = get_elf_func_symbols(filename, &new_node->elf_file_data);
-        if (!new_node->elf_file_data.symbols) {
-            free(new_node->elf_file_data.file_path);
-            free(new_node->elf_file_data.build_id);
-            free(new_node);
-            return NULL;
-        }
+        free(new_node->elf_file_data.file_path);
+        free(new_node->elf_file_data.build_id);
+        free(new_node);
+        elf_parser_cleanup(e, fd);
+        return NULL;
     }
     
     new_node->elf_file_data.reference_count = 1;
     insert_elf_into_table(sys->elf_cache, new_node);
 
+    elf_parser_cleanup(e, fd); // 解析成功后清理
     return &new_node->elf_file_data;
 }
+
 
 /**
  * @brief 减少ELF文件的引用计数。如果引用计数归零，则从缓存中移除该文件。
@@ -216,24 +238,74 @@ void clear_elf_cache(struct elf_file_cache* elf_table) {
  *         调用者负责释放返回的字符串。
  */
 static char* get_elf_build_id(const char* filename) {
-    int fd = open(filename, O_RDONLY);
-    if (fd < 0) return NULL;
+    int fd = -1;
+    Elf* e = elf_parser_init(filename, &fd);
+    if (!e) {
+        return NULL;
+    }
+    char* build_id_str = get_elf_build_id_from_elf(e);
+    elf_parser_cleanup(e, fd);
+    return build_id_str;
+}
+
+// =================================================================
+// 新增静态辅助函数 (重构核心)
+// =================================================================
+
+/**
+ * @brief 初始化ELF解析流程，负责打开文件并创建libelf句柄。
+ * 
+ * 这是ELF文件处理的第一步。它会打开指定路径的文件，并初始化libelf库，
+ * 为后续的Build ID提取和符号解析做准备。
+ *
+ * @param filename 要打开和解析的ELF文件的完整路径。
+ * @param out_fd 一个整型指针，用于传出打开文件的文件描述符(fd)。
+ *               这样做的目的是为了让调用者能够在完成所有操作后关闭它。
+ * @return 成功时返回一个指向Elf结构的指针 (libelf句柄)，失败时返回NULL。
+ */
+static Elf* elf_parser_init(const char* filename, int* out_fd) {
+    *out_fd = open(filename, O_RDONLY);
+    if (*out_fd < 0) return NULL;
 
     if (elf_version(EV_CURRENT) == EV_NONE) {
-        close(fd);
+        close(*out_fd);
+        *out_fd = -1;
         return NULL;
     }
 
-    Elf* e = elf_begin(fd, ELF_C_READ, NULL);
+    Elf* e = elf_begin(*out_fd, ELF_C_READ, NULL);
     if (!e) {
-        close(fd);
+        close(*out_fd);
+        *out_fd = -1;
         return NULL;
     }
+    return e;
+}
 
+/**
+ * @brief 清理并关闭由elf_parser_init创建的资源。
+ *
+ * @param e 要终止的libelf会话句柄。
+ * @param fd 要关闭的文件描述符。
+ */
+static void elf_parser_cleanup(Elf* e, int fd) {
+    if (e) elf_end(e);
+    if (fd >= 0) close(fd);
+}
+
+/**
+ * @brief 从一个已打开的libelf句柄中提取GNU Build ID。
+ * 
+ * 此函数遍历ELF文件的所有节(sections)，专门查找名为 ".note.gnu.build-id" 的节。
+ * 找到后，它会解析这个NOTE类型的节，提取出十六进制的Build ID。
+ *
+ * @param e 一个已初始化的有效libelf句柄。
+ * @return 成功时返回一个动态分配的、包含Build ID的字符串。调用者负责释放此内存。
+ *         如果未找到Build ID或发生错误，则返回NULL。
+ */
+static char* get_elf_build_id_from_elf(Elf* e) {
     size_t shstrndx;
     if (elf_getshdrstrndx(e, &shstrndx) != 0) {
-        elf_end(e);
-        close(fd);
         return NULL;
     }
 
@@ -264,61 +336,31 @@ static char* get_elf_build_id(const char* filename) {
                             }
                             build_id_str[nhdr.n_descsz * 2] = '\0';
                         }
-                        goto end_loop;
+                        return build_id_str; // 找到后立即返回
                     }
                     offset += sizeof(GElf_Nhdr) + name_sz_aligned + desc_sz_aligned;
                 }
             }
         }
     }
-end_loop:
-    elf_end(e);
-    close(fd);
-    return build_id_str;
+    return NULL; // 未找到
 }
 
 /**
- * @brief 解析ELF文件中的函数符号
- * @param filename ELF文件路径
- * @param elf_info ELF文件结构指针（用于存储解析结果）
- * @return elf_symbol_collection* 符号集合，NULL表示失败
+ * @brief 从一个已打开的libelf句柄中解析所有函数符号。
  * 
- * 符号解析流程：
- * 1. 打开ELF文件并验证格式
- * 2. 遍历所有section，查找符号表(.symtab)和动态符号表(.dynsym)
- * 3. 提取函数符号（STT_FUNC类型）
- * 4. 构建红黑树索引，按地址排序
- * 5. 返回符号集合
- * 
- * 符号类型：
- * - STT_FUNC: 函数符号
- * - STT_OBJECT: 数据对象符号
- * - 只处理STT_FUNC类型，因为性能分析主要关注函数调用
- * 
- * 内存管理：
- * - 使用strdup复制符号名称
- * - 使用红黑树管理符号，支持快速查找
- * - 失败时自动清理已分配内存
+ * 此函数会遍历ELF文件中的符号表节 (.symtab) 和动态符号表节 (.dynsym)。
+ * 它会筛选出类型为 STT_FUNC (函数) 且大小大于0的符号，
+ * 并将这些符号的名称、起始地址和大小存入一个红黑树中，以便进行快速的地址查找。
+ *
+ * @param e 一个已初始化的有效libelf句柄。
+ * @param elf_info 指向elf_file结构体的指针，此参数当前未使用，但为未来扩展保留。
+ * @return 成功时返回一个指向 elf_symbol_collection 的指针，其中包含了按地址排序的符号红黑树。
+ *         如果解析失败或未找到任何函数符号，则返回NULL。
  */
-struct elf_symbol_collection* get_elf_func_symbols(const char* filename, struct elf_file* elf_info) {
-    int fd = open(filename, O_RDONLY);
-    if (fd < 0) return NULL;
-
-    if (elf_version(EV_CURRENT) == EV_NONE) {
-        close(fd);
-        return NULL;
-    }
-
-    Elf* e = elf_begin(fd, ELF_C_READ, NULL);
-    if (!e) {
-        close(fd);
-        return NULL;
-    }
-
+static struct elf_symbol_collection* get_elf_func_symbols_from_elf(Elf* e, struct elf_file* elf_info) {
     struct elf_symbol_collection* symbols = calloc(1, sizeof(struct elf_symbol_collection));
     if (!symbols) {
-        elf_end(e);
-        close(fd);
         return NULL;
     }
     symbols->symbol_tree = RB_ROOT;
@@ -364,9 +406,6 @@ struct elf_symbol_collection* get_elf_func_symbols(const char* filename, struct 
             }
         }
     }
-
-    elf_end(e);
-    close(fd);
 
     if (symbols->total_symbols == 0) {
         free(symbols);
