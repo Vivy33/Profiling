@@ -77,7 +77,7 @@ struct elf_symbol_collection {
 // ELF文件结构体 - 表示一个ELF可执行文件或库文件
 struct elf_file {
     char* file_path;          // 文件完整路径
-    char* build_id;           // Build ID, a unique identifier for the ELF file
+    char* build_id;           // ELF文件的唯一构建ID
     int reference_count;      // 引用计数（用于缓存管理）
     struct elf_symbol_collection* symbols; // ELF文件中的符号集合
     Elf64_Ehdr elf_header;    // ELF文件头
@@ -136,7 +136,6 @@ const char* find_symbol_name_from_elf(struct elf_file* elf, uint64_t relative_ad
 // elf.c
 struct elf_file* find_or_create_elf(struct system_context* sys_ctx, const char* filename);
 void release_elf(struct elf_file_cache* elf_cache, const char* filename);
-struct elf_symbol_collection* get_elf_func_symbols(const char* filename, struct elf_file* elf_info);
 void clear_elf_cache(struct elf_file_cache* elf_cache);
 
 // vma.c
