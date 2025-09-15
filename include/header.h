@@ -127,7 +127,7 @@ void free_process_hash_table(struct process_hash_table *hash_table);
 void free_vma_tree(struct rb_root *root);
 
 // handler.c
-void handle_sample(struct system_context *sys, struct sample_data *data);
+void symbolize_sample(struct system_context *sys, struct sample_data *data);
 
 // symbol_table.c
 struct symbol_info* rb_search_symbol(struct rb_root *root, uint64_t addr);

@@ -40,13 +40,13 @@ static int setup_epoll_fd(struct perf_event_manager* manager) {
     return epoll_fd;
 }
 
-// process_sample_event 是一个回调函数，用于处理来自ring buffer的单个perf事件
-static void process_sample_event(struct perf_event_header *header, void *context) {
+// dispatch_sample_event 是一个回调函数，用于根据事件类型分发来自ring buffer的perf事件
+static void dispatch_sample_event(struct perf_event_header *header, void *context) {
     struct system_context *sys_info = (struct system_context *)context;
     
     // 我们只关心采样记录
     if (header->type == PERF_RECORD_SAMPLE) {
-        handle_sample(sys_info, (struct sample_data *)header);
+        symbolize_sample(sys_info, (struct sample_data *)header);
     }
 }
 
@@ -84,7 +84,7 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
             break;
         }
         
-        // 高性能模式：epoll通知 + mmap直接消费
+        // 高性能模式：epoll通知 + read直接消费
         for (int i = 0; i < num_events; i++) {
             if (events[i].events & EPOLLIN) {
                 // 查找与文件描述符匹配的perf_event_fd
@@ -96,9 +96,9 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
                     }
                 }
                 
-                // 使用mmap的ring buffer处理函数消费数据
+                // 使用read的ring buffer处理函数消费数据
                 if (event_fd) {
-                    perf_event_process_ring_buffer(event_fd, process_sample_event, system_info);
+                    perf_event_consume_ring_buffer(event_fd, dispatch_sample_event, system_info);
                 }
             }
         }

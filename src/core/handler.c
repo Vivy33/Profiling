@@ -43,7 +43,7 @@
  * 详细模式：PID: 1234, IP: 0x7f8b3c45a280, Symbol: malloc in /lib/libc.so.6
  * 简洁模式：1234: malloc
  */
-void handle_sample(struct system_context *sys, struct sample_data *data) {
+void symbolize_sample(struct system_context *sys, struct sample_data *data) {
     extern struct profiling_config global_config;
     
     /**

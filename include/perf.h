@@ -41,36 +41,17 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
 // 清理性能事件
 void perf_event_cleanup_manager(struct perf_event_manager* manager);
 
-/**
- * @brief 初始化性能事件（兼容旧接口，系统模式）
- * @param num_cpus 输出参数，返回CPU数量
- * @return 成功时返回perf_event_fd数组的指针，失败时返回NULL
- */
-struct perf_event_fd* perf_event_init(int *num_cpus);
 
 /**
- * @brief 清理性能事件（兼容旧接口）
- * @param events perf_event_fd数组的指针
- * @param num_cpus CPU数量
- */
-void perf_event_cleanup(struct perf_event_fd *events, int num_cpus);
-
-/**
- * @brief 处理perf事件的环形缓冲区 - lock-free设计
+ * @brief 消费perf事件环形缓冲区中的数据 - lockfree
  * @param event 指向perf_event_fd结构体的指针
  * @param handler 处理perf_event_header的回调函数
  * @return 1表示处理了数据，0表示没有新数据
  */
-int perf_event_process_ring_buffer(struct perf_event_fd *event, 
+int perf_event_consume_ring_buffer(struct perf_event_fd *event, 
                                      void (*handler)(struct perf_event_header *, void *), 
                                      void *context);
 
-/**
- * @brief 消费所有CPU上的perf采样事件
- * @param manager 指向perf_event_manager结构体的指针
- * @param handler 处理sample_data的回调函数
- * @return 处理的事件数量
- */
-int perf_event_consume_samples(struct perf_event_manager *manager, void (*handler)(struct sample_data *));
+
 
 #endif // PERF_H

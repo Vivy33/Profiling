@@ -41,7 +41,7 @@ static struct perf_event_attr build_perf_attr(const struct profiling_config* con
         pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER;
     }
     
-    // 使用频率模式替代周期模式
+    // 使用频率模式
     pe.freq = 1;
     pe.sample_freq = config->sampling_frequency;
     
@@ -164,41 +164,8 @@ void perf_event_cleanup_manager(struct perf_event_manager* manager) {
     free(manager);
 }
 
-// 兼容旧接口
-struct perf_event_fd* perf_event_init(int *num_cpus) {
-    struct profiling_config config;
-    struct profiling_config* cfg = &config;
-    
-    // 简化配置，只保留必要的采样频率
-    cfg->sampling_frequency = 30;
-    cfg->verbose = false;
-    
-    struct perf_event_manager* manager = perf_event_init_with_config(cfg);
-    if (!manager) return NULL;
-    
-    *num_cpus = manager->num_cpus;
-    
-    // 返回兼容的事件数组
-    struct perf_event_fd* events = manager->events;
-    free(manager); // 只释放管理器，保留事件数组
-    
-    return events;
-}
-
-void perf_event_cleanup(struct perf_event_fd *events, int num_cpus) {
-    if (!events) return; 
-    
-    for (int i = 0; i < num_cpus; i++) {
-        if (events[i].fd >= 0) {
-            ioctl(events[i].fd, PERF_EVENT_IOC_DISABLE, 0);
-            close(events[i].fd);
-        }
-    }
-    free(events);
-}
-
-// 基于read的ring buffer处理
-int perf_event_process_ring_buffer(struct perf_event_fd *event, 
+// 基于read的ring buffer消费
+int perf_event_consume_ring_buffer(struct perf_event_fd *event, 
                                      void (*handler)(struct perf_event_header *, void *), 
                                      void *context) {
     if (!event || !handler) {
@@ -229,27 +196,4 @@ int perf_event_process_ring_buffer(struct perf_event_fd *event,
     }
 
     return processed_count > 0 ? 1 : 0;
-}
-
-// sample_consumer_callback 是一个包装器，用于将 perf_event_header 转换为 sample_data
-static void sample_consumer_callback(struct perf_event_header *header, void *context) {
-    void (*actual_handler)(struct sample_data *) = context;
-    if (header->type == PERF_RECORD_SAMPLE) {
-        actual_handler((struct sample_data *)header);
-    }
-}
-
-// 处理所有采样事件
-int perf_event_consume_samples(struct perf_event_manager *manager, void (*handler)(struct sample_data *)) {
-    if (!manager || !handler || !manager->events) {
-        return -1;
-    }
-
-    int processed = 0;
-    for (int i = 0; i < manager->num_events; i++) {
-        processed += perf_event_process_ring_buffer(&manager->events[i], 
-                                                   sample_consumer_callback,
-                                                   handler);
-    }
-    return processed;
 }
