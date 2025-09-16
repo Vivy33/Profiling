@@ -68,8 +68,20 @@ void symbolize_sample(struct system_context *sys, struct sample_data *data) {
             break;
     }
 
+    // 内核态地址处理
+    if (is_kernel_addr) {
+        const char *kernel_symbol = find_kernel_symbol(sys->kernel_symbols, data->ip);
+        if (global_config.verbose) {
+            printf("PID: %d, IP: 0x%lx, Symbol: %s in [kernel]\n", 
+                   data->pid, data->ip, kernel_symbol);
+        } else {
+            printf("%d: %s [kernel]\n", data->pid, kernel_symbol);
+        }
+        return; // 内核地址处理完毕，直接返回
+    }
+
     /**
-     * 步骤2：进程查找或创建
+     * 步骤2：进程查找或创建 (仅用户态)
      * 根据PID查找进程信息，如果进程不存在则创建：
      * - 在进程哈希表中查找
      * - 如果未找到，创建新的进程信息并解析内存映射
