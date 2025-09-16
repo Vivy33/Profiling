@@ -25,6 +25,7 @@
 #include "rbtree.h"
 #include "hash.h"
 #include "perf.h"
+#include "kernel_symbol.h"
 
 #define READ 0x1
 #define WRITE 0x2
@@ -101,6 +102,7 @@ struct elf_file_cache {
 struct system_context {
     struct process_hash_table* process_table;  // 进程哈希表
     struct elf_file_cache* elf_cache;          // ELF文件缓存
+    struct rb_root *kernel_symbols;            // 内核符号红黑树
 };
 
 struct sample_data {
