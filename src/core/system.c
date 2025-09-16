@@ -62,6 +62,13 @@ int initialize_system(struct system_context* system_info) {
         free(system_info->elf_cache);
         return 1;
     }
+
+    // 加载内核符号表
+    system_info->kernel_symbols = load_kernel_symbols();
+    if (!system_info->kernel_symbols) {
+        fprintf(stderr, "警告: 无法加载内核符号, 内核函数名将无法解析。\n");
+        // 这是一个非致命错误，程序可以继续运行
+    }
     
     return 0;
 }
@@ -71,16 +78,20 @@ int initialize_system(struct system_context* system_info) {
  * @param system_info 系统上下文指针
  * 
  * 清理顺序（确保无内存泄漏）：
- * 1. 清理ELF文件缓存（释放ELF解析结果和符号表）
- * 2. 清理进程哈希表（释放所有进程信息和VMA树）
- * 3. 释放哈希表本身
+ * 1. 清理内核符号表
+ * 2. 清理ELF文件缓存（释放ELF解析结果和符号表）
+ * 3. 清理进程哈希表（释放所有进程信息和VMA树）
+ * 4. 释放哈希表本身
  * 
  * 线程安全：应在主线程退出时调用
  * 可重入：支持多次调用，NULL参数安全
  */
 void cleanup_system(struct system_context* system_info) {
-    if (!system_info) return;
+    if (!system_info) return; 
     
+    // 释放内核符号表
+    free_kernel_symbols(system_info->kernel_symbols);
+
     // 清理ELF文件缓存，释放所有ELF解析结果
     clear_elf_cache(system_info->elf_cache);
     free(system_info->elf_cache);
