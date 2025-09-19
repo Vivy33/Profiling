@@ -39,6 +39,7 @@ void print_usage(const char* program_name) {
     printf("  --frequency=NUM    Sampling frequency in Hz (default: %d)\n", DEFAULT_SAMPLING_FREQUENCY);
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
+    printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
     printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
     printf("  --verbose          Enable verbose output\n");
     printf("  --help             Show this help message\n");
@@ -56,6 +57,7 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->sampling_frequency = DEFAULT_SAMPLING_FREQUENCY;
     config->filter_mode = FILTER_ALL;
     config->cleanup_interval = DEFAULT_CLEANUP_INTERVAL;
+    config->max_stack_depth = DEFAULT_MAX_STACK_DEPTH;
     config->verbose = false;
     config->use_lbr = false;
     
@@ -76,6 +78,12 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
                 config->filter_mode = FILTER_ALL;
             } else {
                 fprintf(stderr, "Error: Invalid filter mode '%s'. Use user|kernel|all\n", mode);
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--stack-depth=", 14) == 0) {
+            config->max_stack_depth = atoi(argv[i] + 14);
+            if (config->max_stack_depth <= 0) {
+                fprintf(stderr, "Error: Invalid stack depth\n");
                 return -1;
             }
         } else if (strncmp(argv[i], "--cleanup=", 10) == 0) {
@@ -128,4 +136,3 @@ int validate_config(struct profiling_config* config) {
     
     return 0;
 }
-
