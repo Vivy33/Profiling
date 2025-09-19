@@ -1,11 +1,10 @@
-
 #ifndef ELF_UTILS_H
 #define ELF_UTILS_H
 
 #include "header.h"
 
 // 查找或创建ELF文件对象
-struct elf_file* find_or_create_elf(struct system_context* sys, const char *filename);
+struct elf_file* find_or_create_elf(struct system_context* sys, int pid, const char *filename);
 
 // 减少ELF文件的引用计数。如果引用计数归零，则移除该文件。
 void release_elf(struct elf_file_cache* elf_table, const char* filename);
