@@ -38,12 +38,14 @@ struct virtual_memory_area {
     unsigned int vm_flags;    // 内存区域权限标志（读/写/执行）
     uint64_t file_offset;     // 映射文件的偏移量
     char *mapping_name;       // 内存映射的名称（如文件路径或匿名映射）
+    struct elf_file* elf_file; // 指向关联ELF文件缓存的指针
     struct rb_node vm_rb_node; // 红黑树节点，用于快速查找
 };
 
 // 进程信息结构体 - 表示一个正在运行的进程
 struct process_info {
     int process_id;           // 进程ID
+    unsigned long long start_time; // 进程启动时间（jiffies）
     char* process_name;       // 进程名称
     char* command_line;       // 完整命令行参数
     char* executable_path;    // 可执行文件完整路径
@@ -105,6 +107,14 @@ struct system_context {
     struct rb_root *kernel_symbols;            // 内核符号红黑树
 };
 
+// 调用栈解析结果
+struct callchain_result {
+    uint32_t pid, tid;
+    uint64_t ip;
+    uint64_t nr;
+    uint64_t *ips;
+};
+
 struct sample_data {
     struct perf_event_header header;
     uint32_t pid, tid;
@@ -127,17 +137,21 @@ struct virtual_memory_area* find_vma_from_process(struct process_info* proc, uns
 void cleanup_dead_processes(struct system_context *sys);
 void free_process_hash_table(struct process_hash_table *hash_table);
 void free_vma_tree(struct rb_root *root);
+bool is_process_alive(int pid);
+unsigned long long get_process_start_time(int pid);
+void remove_process(struct system_context *sys, int pid);
 
 // handler.c
-void symbolize_sample(struct system_context *sys, struct sample_data *data);
+void parse_sample_data(struct perf_event_header *header, struct callchain_result *result, uint64_t max_ips);
+void symbolize_sample(struct system_context *sys, struct callchain_result *callchain);
 
 // symbol_table.c
 struct symbol_info* rb_search_symbol(struct rb_root *root, uint64_t addr);
 const char* find_symbol_name_from_elf(struct elf_file* elf, uint64_t relative_address);
 
 // elf.c
-struct elf_file* find_or_create_elf(struct system_context* sys_ctx, const char* filename);
-void release_elf(struct elf_file_cache* elf_cache, const char* filename);
+struct elf_file* find_or_create_elf(struct system_context* sys_ctx, int pid, const char* filename);
+void release_elf_by_ptr(struct elf_file_cache* elf_cache, struct elf_file* elf_obj);
 void clear_elf_cache(struct elf_file_cache* elf_cache);
 
 // vma.c
