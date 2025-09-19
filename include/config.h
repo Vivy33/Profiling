@@ -16,6 +16,7 @@ struct profiling_config {
     int sampling_frequency;             // 采样频率 (Hz)
     enum filter_mode filter_mode;       // 显示过滤模式
     int cleanup_interval;               // 死进程清理间隔 (秒)
+    int max_stack_depth;                // 最大栈回溯深度
     bool verbose;                       // 详细输出
     bool use_lbr;                       // 是否启用LBR
 };
@@ -28,6 +29,7 @@ int validate_config(struct profiling_config* config);
 // 默认配置
 #define DEFAULT_SAMPLING_FREQUENCY 30    // 30Hz
 #define DEFAULT_CLEANUP_INTERVAL 30      // 30秒
+#define DEFAULT_MAX_STACK_DEPTH 48       // 默认栈深度
 #define MAX_TARGETS 32                   // 最大目标进程数
 
 #endif // CONFIG_H
