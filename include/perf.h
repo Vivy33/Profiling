@@ -50,6 +50,9 @@ struct perf_event_fd {
     size_t mmap_size;           /** @brief 映射区域总大小
                                  *   - 值：1MB + pagesize（1MB数据 + 1页元数据）
                                  *   - 用途：munmap清理时的参数 */
+    size_t pagesize;            /** @brief 系统页大小
+                                 *   - 来源：sysconf(_SC_PAGESIZE)
+                                 *   - 作用：缓存页大小，避免重复系统调用 */
 };
 
 /**
