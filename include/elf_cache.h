@@ -21,11 +21,11 @@ static inline int list_empty(const struct list_head *head) {
     return head->next == head;
 }
 
-static inline void list_add_tail(struct list_head *new, struct list_head *head) {
-    new->next = head;
-    new->prev = head->prev;
-    head->prev->next = new;
-    head->prev = new;
+static inline void list_add_tail(struct list_head *new_node, struct list_head *head) {
+    new_node->next = head;
+    new_node->prev = head->prev;
+    head->prev->next = new_node;
+    head->prev = new_node;
 }
 
 static inline void list_del(struct list_head *entry) {
