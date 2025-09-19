@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <libelf.h>
 
 #include "../include/header.h"
 #include "../include/config.h"
@@ -60,6 +61,15 @@ struct profiling_config global_config;
  * 错误处理：每个阶段都有完善的错误处理和资源清理机制
  */
 int main(int argc, char* argv[]) {
+    /**
+     * 阶段0: 库初始化
+     * 在任何其他操作之前，初始化libelf库
+     */
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "Error: Failed to initialize libelf\n");
+        return 1;
+    }
+
     /**
      * 阶段1：配置解析
      * 解析命令行参数，填充global_config结构
@@ -120,7 +130,6 @@ int main(int argc, char* argv[]) {
     /**
      * 阶段6：主事件循环
      * 进入性能监控主循环：
-     * - 使用poll()等待perf事件就绪
      * - 处理每个采样事件，将IP地址解析为符号
      * - 定期清理已终止的进程
      * - 持续运行直到用户中断（Ctrl+C）
