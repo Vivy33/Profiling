@@ -3,6 +3,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+// #include <sys/time.h>
 
 #include "../../include/header.h"
 #include "../../include/config.h"
@@ -14,7 +15,15 @@ static void dispatch_sample_event(struct perf_event_header *header, void *contex
     
     // 我们只关心采样记录
     if (header->type == PERF_RECORD_SAMPLE) {
-        symbolize_sample(sys_info, (struct sample_data *)header);
+        struct callchain_result result;
+        // 创建一个安全的栈上缓冲区来存储调用栈IP。
+        // 内核默认栈深度通常不超过127，我们这里设置一个安全的上限。
+        uint64_t ips_buffer[128];
+        result.ips = ips_buffer;
+
+        // 将缓冲区和其大小传递给解析函数，以安全地复制数据
+        parse_sample_data(header, &result, 128);
+        symbolize_sample(sys_info, &result);
     }
 }
 
@@ -27,16 +36,29 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
     extern struct profiling_config global_config;
     
     time_t last_cleanup_time = time(NULL);
+// gettimeofday 量化时间 方便日后debug    
+// struct timeval start_time, end_time;
 
     printf("Starting profiling with adaptive sleep loop... Press Ctrl+C to stop\n\n");
 
     while (1) {
-        int total_events_processed = 0;
+// gettimeofday(&start_time, NULL);
 
+        int total_events_processed = 0;
         // 遍历所有CPU核心的perf event fd，消费所有可用数据
         for (int i = 0; i < manager->num_events; i++) {
             total_events_processed += perf_event_consume_ring_buffer(&manager->events[i], dispatch_sample_event, system_info);
         }
+
+// gettimeofday(&end_time, NULL);
+/*
+观察cpu利用率，核心多可能出现永远空转
+if (global_config.verbose && total_events_processed > 0) {
+    long seconds = end_time.tv_sec - start_time.tv_sec;
+    long micros = ((seconds * 1000000) + end_time.tv_usec) - (start_time.tv_usec);
+    printf("Processed %d events in %ld microseconds\n", total_events_processed, micros);
+}
+*/
 
         // 只有当一轮完整的检查没有发现任何新事件时，才进行休眠
         if (total_events_processed == 0) {
@@ -53,4 +75,3 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
         // 如果处理了事件，则立即再次循环，以尽快处理下一批数据
     }
 }
-
