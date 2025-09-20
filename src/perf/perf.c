@@ -310,8 +310,8 @@ int perf_event_consume_ring_buffer(struct perf_event_fd *event,
     size_t buf_size = event->mmap_size - pagesize;  // 实际数据缓冲区大小
 
     // 原子读取生产者/消费者指针
-    uint64_t tail = __atomic_load_n(&event->mmap_page->data_tail, __ATOMIC_RELAXED);
-    uint64_t head = __atomic_load_n(&event->mmap_page->data_head, __ATOMIC_RELAXED);
+    uint64_t tail = atomic_load(&event->mmap_page->data_tail);
+    uint64_t head = atomic_load(&event->mmap_page->data_head);
 
     if (tail == head) {
         return 0; // 无新数据，立即返回
