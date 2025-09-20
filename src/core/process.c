@@ -25,11 +25,92 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #include "../../include/header.h"
 #include "../../include/hash.h"
 #include "../../include/rbtree.h"
 #include "../../include/config.h"
+
+/**
+ * @brief 从/proc/[pid]/stat获取进程启动时间
+ * @param pid 进程ID
+ * @return unsigned long long 进程启动时间（jiffies），失败返回0
+ *
+ * /proc/[pid]/stat文件包含多个字段，第22个字段是启动时间。
+ * 这是一个可靠的标识符，用于区分PID复用的不同进程实例。
+ */
+unsigned long long get_process_start_time(int pid) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+
+    unsigned long long start_time = 0;
+    // /proc/[pid]/stat中的第22个字段是starttime（自Linux 2.6起）
+    // 我们扫描前21个字段以获取它。
+    int result = fscanf(f, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %*d %*d %*d %*d %*d %*d %llu", &start_time);
+    fclose(f);
+
+    if (result == 1) {
+        return start_time;
+    }
+    return 0;
+}
+
+/**
+ * @brief 读取/proc/[pid]/下的指定文件内容
+ * @param pid 进程ID
+ * @param file_name 要读取的文件名 (例如 "comm", "cmdline")
+ * @return char* 文件内容的动态分配字符串，失败返回NULL
+ * 
+ * 读取/proc文件系统的核心辅助函数。
+ * - 动态构建文件路径
+ * - 一次性读取文件所有内容
+ * - 调用者负责释放返回的字符串内存
+ */
+static char* read_proc_file(int pid, const char* file_name) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
+
+    int fd = open(path, O_RDONLY);
+    if (fd == -1) {
+        return NULL; // 进程可能已退出
+    }
+
+    char* buffer = (char*)malloc(4096); // 通常足够大
+    if (!buffer) {
+        close(fd);
+        return NULL;
+    }
+
+    ssize_t bytes_read = read(fd, buffer, 4095);
+    close(fd);
+
+    if (bytes_read <= 0) {
+        free(buffer);
+        return NULL;
+    }
+
+    buffer[bytes_read] = '\0';
+
+    // 处理comm文件末尾的换行符
+    if (strcmp(file_name, "comm") == 0 && bytes_read > 0 && buffer[bytes_read - 1] == '\n') {
+        buffer[bytes_read - 1] = '\0';
+    }
+
+    // 处理cmdline文件中的\0分隔符
+    if (strcmp(file_name, "cmdline") == 0) {
+        for (ssize_t i = 0; i < bytes_read - 1; ++i) {
+            if (buffer[i] == '\0') {
+                buffer[i] = ' '; // 替换为为空格
+            }
+        }
+    }
+
+    return buffer;
+}
 
 /**
  * @brief 在进程哈希表中查找指定PID的进程
@@ -92,6 +173,19 @@ struct process_info* find_new_process(struct process_hash_table* process_table, 
     
     // 初始化进程基本信息
     new_node->process_data.process_id = pid;
+    new_node->process_data.start_time = get_process_start_time(pid);
+    new_node->process_data.process_name = read_proc_file(pid, "comm");
+    new_node->process_data.command_line = read_proc_file(pid, "cmdline");
+
+    // 回退逻辑，确保进程名和命令行不为NULL
+    if (!new_node->process_data.process_name) {
+        new_node->process_data.process_name = strdup("<unknown>");
+    }
+    if (!new_node->process_data.command_line || new_node->process_data.command_line[0] == '\0') {
+        free(new_node->process_data.command_line);
+        new_node->process_data.command_line = strdup(new_node->process_data.process_name);
+    }
+    
     new_node->process_data.memory_map_tree = RB_ROOT;  // 初始化红黑树根节点
 
     // 解析进程内存映射，填充VMA树
@@ -106,6 +200,49 @@ struct process_info* find_new_process(struct process_hash_table* process_table, 
     process_table->nodes[index] = new_node;
 
     return &new_node->process_data;
+}
+
+/**
+ * @brief 从哈希表中移除一个进程并释放其资源
+ * @param sys 系统上下文
+ * @param pid 要移除的进程ID
+ *
+ * 用于处理PID复用时，主动废弃过时的缓存条目。
+ */
+void remove_process(struct system_context *sys, int pid) {
+    unsigned int index = hash_pid(pid);
+    struct process_hash_node* node = sys->process_table->nodes[index];
+    struct process_hash_node* prev = NULL;
+
+    while (node) {
+        if (node->process_data.process_id == pid) {
+            // 从链表中解除节点链接
+            if (prev) {
+                prev->next_node = node->next_node;
+            } else {
+                sys->process_table->nodes[index] = node->next_node;
+            }
+
+            // 释放资源
+            struct rb_root* vma_root = &node->process_data.memory_map_tree;
+            struct rb_node* rb_node = rb_first(vma_root);
+            while (rb_node) {
+                struct virtual_memory_area* vma = rb_entry(rb_node, struct virtual_memory_area, vm_rb_node);
+                if (vma->elf_file) {
+                    release_elf_by_ptr(sys->elf_cache, vma->elf_file);
+                }
+                rb_node = rb_next(rb_node);
+            }
+            free(node->process_data.process_name);
+            free(node->process_data.command_line);
+            free(node->process_data.executable_path);
+            free_vma_tree(&node->process_data.memory_map_tree);
+            free(node);
+            return;
+        }
+        prev = node;
+        node = node->next_node;
+    }
 }
 
 /**
@@ -185,6 +322,7 @@ void cleanup_dead_processes(struct system_context *sys) {
         struct process_hash_node* prev = NULL;
         
         while (node) {
+            // pid复用 概率极低
             if (!is_process_alive(node->process_data.process_id)) {
                 if (global_config.verbose) {
                     printf("Cleaning up dead process: %d\n", node->process_data.process_id);
@@ -195,8 +333,8 @@ void cleanup_dead_processes(struct system_context *sys) {
                 struct rb_node* rb_node = rb_first(vma_root);
                 while (rb_node) {
                     struct virtual_memory_area* vma = rb_entry(rb_node, struct virtual_memory_area, vm_rb_node);
-                    if (vma->mapping_name) {
-                        release_elf(sys->elf_cache, vma->mapping_name);  // 减少ELF引用计数
+                    if (vma->elf_file) {
+                        release_elf_by_ptr(sys->elf_cache, vma->elf_file);
                     }
                     rb_node = rb_next(rb_node);
                 }
