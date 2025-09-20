@@ -71,10 +71,9 @@ static struct perf_event_attr build_perf_attr(const struct profiling_config* con
     if (config->use_lbr) {
         // LBR模式: 使用硬件事件，采集分支记录
         pe.type = PERF_TYPE_HARDWARE;
-        pe.config = PERF_COUNT_HW_INSTRUCTIONS;
-        // 使用LBR + reg进行栈回溯，不依赖libunwind，且只采集函数调用分支
+        pe.config = PERF_COUNT_HW_BRANCH_INSTRUCTIONS; // 使用分支指令计数器更适合LBR
         pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_BRANCH_STACK | PERF_SAMPLE_REGS_USER;
-        pe.branch_sample_type = PERF_SAMPLE_BRANCH_ANY_CALL;
+        pe.branch_sample_type = PERF_SAMPLE_BRANCH_ANY; // 捕获所有类型的分支
     } else {
         // 默认模式: 基于软件时钟
         pe.type = PERF_TYPE_SOFTWARE;
@@ -82,9 +81,14 @@ static struct perf_event_attr build_perf_attr(const struct profiling_config* con
         pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER;
     }
     
+    // 明确请求BP(RBP, r_bp=6)和SP(RSP, r_sp=7)寄存器，这对于可靠的栈回溯至关重要。
+    // 之前的"Invalid argument"错误是因为我们请求了REGS_USER但没有指定具体哪些寄存器。
+    pe.sample_regs_user = (1ULL << 6) | (1ULL << 7);
+
     // 使用频率模式
     pe.freq = 1;
     pe.sample_freq = config->sampling_frequency;
+    pe.sample_max_stack = config->max_stack_depth;
     
     pe.disabled = 1;
     pe.exclude_kernel = 0;  // 全量采集，包含用户态和内核态
@@ -100,13 +104,13 @@ static int create_perf_event(struct perf_event_attr *pe, int cpu, pid_t target_p
 
 // 初始化管理器结构
 static struct perf_event_manager* initialize_manager(int num_cpus) {
-    struct perf_event_manager* manager = calloc(1, sizeof(struct perf_event_manager));
+    struct perf_event_manager* manager = (struct perf_event_manager*)calloc(1, sizeof(struct perf_event_manager));
     if (!manager) {
         perror("calloc manager");
         return NULL;
     }
 
-    manager->events = calloc(num_cpus, sizeof(struct perf_event_fd));
+    manager->events = (struct perf_event_fd*)calloc(num_cpus, sizeof(struct perf_event_fd));
     if (!manager->events) {
         perror("calloc events");
         free(manager);
@@ -232,6 +236,7 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
             cleanup_events(manager, cpu + 1);
             return NULL;
         }
+        manager->events[cpu].pagesize = pagesize;
 
         manager->events[cpu].mmap_buffer = perf_get_mmap_buf(manager->events[cpu].mmap_page, pagesize);
 
@@ -276,7 +281,7 @@ void perf_event_cleanup_manager(struct perf_event_manager* manager) {
 /**
  * @brief 消费perf事件环形缓冲区中的数据（核心消费函数）
  * @param event 指向perf_event_fd结构体的指针
- *        - event->fd: perf事件文件描述符（用于验证）
+ *        - event->fd: perf事件的文件描述符（用于验证）
  *        - event->mmap_page: 映射的perf事件元数据页
  *        - event->mmap_buffer: 数据缓冲区起始地址
  *        - event->mmap_size: 映射区域总大小
@@ -295,12 +300,8 @@ void perf_event_cleanup_manager(struct perf_event_manager* manager) {
 int perf_event_consume_ring_buffer(struct perf_event_fd *event, 
                                      void (*handler)(struct perf_event_header *, void *), 
                                      void *context) {
-    if (!event || !handler || !event->mmap_page) {
-        return 0;
-    }
-
-    long pagesize = sysconf(_SC_PAGESIZE);
-    if (pagesize < 0) {
+    long pagesize = event->pagesize;
+    if (pagesize <= 0) { // Safety check
         return 0;
     }
 
@@ -309,8 +310,8 @@ int perf_event_consume_ring_buffer(struct perf_event_fd *event,
     size_t buf_size = event->mmap_size - pagesize;  // 实际数据缓冲区大小
 
     // 原子读取生产者/消费者指针
-    uint64_t tail = atomic_load(&event->mmap_page->data_tail);
-    uint64_t head = atomic_load(&event->mmap_page->data_head);
+    uint64_t tail = __atomic_load_n(&event->mmap_page->data_tail, __ATOMIC_RELAXED);
+    uint64_t head = __atomic_load_n(&event->mmap_page->data_head, __ATOMIC_RELAXED);
 
     if (tail == head) {
         return 0; // 无新数据，立即返回
@@ -327,7 +328,7 @@ int perf_event_consume_ring_buffer(struct perf_event_fd *event,
 
     // 主循环：处理所有可用事件
     while (cur != end) {
-        struct perf_event_header *hdr;
+        struct perf_event_header *hdr = NULL;
 
         // 检查事件头部是否跨边界
         if (cur + sizeof(struct perf_event_header) > base + buf_size) {
