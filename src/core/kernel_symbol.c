@@ -1,7 +1,8 @@
-#include "kernel_symbol.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "kernel_symbol.h"
 
 // 定义 kallsyms 文件路径
 #define KALLSYMS_PATH "/proc/kallsyms"
@@ -61,31 +62,50 @@ struct rb_root *load_kernel_symbols(void) {
     ssize_t read;
 
     // 逐行读取文件
-    while ((read = getline(&line, &len, file)) != -1) {
-        struct kernel_symbol *sym = (struct kernel_symbol *)malloc(sizeof(struct kernel_symbol));
-        if (!sym) continue;
+    /*
+    man getline
+    DESCRIPTION
+       getline()  reads  an entire line from stream, storing the address of the buffer containing the text into *lineptr.  The buffer is null-terminated and includes
+       the newline character, if one was found.
 
-        sym->name = (char *)malloc(256); // 为符号名分配足够的空间
-        if (!sym->name) {
-            free(sym);
-            continue;
-        }
+       If *lineptr is set to NULL before the call, then getline() will allocate a buffer for storing the line.  This buffer should be freed by the user program  even
+       if getline() failed.
+
+       Alternatively,  before  calling getline(), *lineptr can contain a pointer to a malloc(3)-allocated buffer *n bytes in size.  If the buffer is not large enough
+       to hold the line, getline() resizes it with realloc(3), updating *lineptr and *n as necessary.
+
+       In either case, on a successful call, *lineptr and *n will be updated to reflect the buffer address and allocated size respectively.
+
+       getdelim() works like getline(), except that a line delimiter other than newline can be specified as the delimiter argument.  As with getline(),  a  delimiter
+       character is not added if one was not present in the input before end of file was reached.
+    */
+    while ((read = getline(&line, &len, file)) != -1) {
+        unsigned long address;
+        char type;
+        char name[256];
 
         // 解析行: <address> <type> <name>
-        if (sscanf(line, "%lx %c %255s", &sym->address, &sym->type, sym->name) == 3) {
+        if (sscanf(line, "%lx %c %255s", &address, &type, name) == 3) {
             // 只插入全局文本符号 (t, T)
-            if (sym->type == 't' || sym->type == 'T') {
+            if (type == 't' || type == 'T') {
+                struct kernel_symbol *sym = (struct kernel_symbol *)malloc(sizeof(struct kernel_symbol));
+                
+                if (!sym) continue;
+                sym->name = strdup(name); // 为符号名分配足够的空间
+
+                if (!sym->name) {
+                    free(sym);
+                    continue;
+                }
+                sym->address = address;
+                sym->type = type;
+
                 if (!insert_symbol(root, sym)) {
+                    // printf("插入%s符号失败,", sym->name); // 注释掉，因为重复地址是正常现象
                     free(sym->name);
                     free(sym);
                 }
-            } else {
-                free(sym->name);
-                free(sym);
             }
-        } else {
-            free(sym->name);
-            free(sym);
         }
     }
 
