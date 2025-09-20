@@ -50,10 +50,10 @@ int initialize_system(struct system_context* system_info) {
     }
 
     // 创建进程哈希表，O(1)平均时间复杂度查找
-    system_info->process_table = calloc(1, sizeof(struct process_hash_table));
+    system_info->process_table = (struct process_hash_table*)calloc(1, sizeof(struct process_hash_table));
     
     // 创建ELF文件缓存，避免重复文件IO和解析
-    system_info->elf_cache = calloc(1, sizeof(struct elf_file_cache));
+    system_info->elf_cache = (struct elf_file_cache*)calloc(1, sizeof(struct elf_file_cache));
 
     // 内存分配失败处理
     if (!system_info->process_table || !system_info->elf_cache) {
