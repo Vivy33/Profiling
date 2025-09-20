@@ -22,132 +22,202 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "../../include/header.h"
 #include "../../include/config.h"
 
+// PERF_CONTEXT_MAX 是有效IP地址的上限。
+// 超过此值的地址是上下文标记。此值来自内核UAPI
+#ifndef PERF_CONTEXT_MAX
+#define PERF_CONTEXT_MAX ((__u64)-4095)
+#endif
+
 /**
- * @brief 处理单个perf采样事件
- * @param sys 系统上下文，包含进程哈希表和ELF缓存
- * @param data 采样数据，包含PID、指令地址等关键信息
- * 
- * 处理流程：
- * 1. 根据配置模式过滤进程
- * 2. 查找或创建进程信息
- * 3. 查找地址对应的虚拟内存区域(VMA)
- * 4. 计算相对文件偏移
- * 5. 查找或解析ELF文件
- * 6. 查找符号名称并输出
- * 
- * 输出格式：
- * 详细模式：PID: 1234, IP: 0x7f8b3c45a280, Symbol: malloc in /lib/libc.so.6
- * 简洁模式：1234: malloc
+ * @brief 解析来自perf_event_header的原始采样数据。
+ * @param header 指向环形缓冲区中perf_event_header的指针。
+ * @param result 指向要填充的callchain_result结构体的指针。
+ *
+ * 此函数根据配置的sample_type解释头部之后的数据。
+ * 它能处理软件调用链和LBR分支栈。
  */
-void symbolize_sample(struct system_context *sys, struct sample_data *data) {
+void parse_sample_data(struct perf_event_header *header, struct callchain_result *result, uint64_t max_ips) {
     extern struct profiling_config global_config;
     
-    /**
-     * 步骤1：地址空间过滤
-     * 根据配置决定是否过滤内核态或用户态地址：
-     * - FILTER_ALL：处理所有地址
-     * - FILTER_USER：只处理用户态地址(0x0000-0x7FFF FFFF FFFF FFFF)
-     * - FILTER_KERNEL：只处理内核态地址(0xFFFF 8000 0000 0000-0xFFFF FFFF FFFF FFFF)
-     */
-    bool is_kernel_addr = (data->ip & 0x8000000000000000ULL) != 0;
+    // 安全地初始化结构体成员，而不是使用memset，以保护由调用者设置的ips指针。
+    result->pid = 0;
+    result->tid = 0;
+    result->ip = 0;
+    result->nr = 0;
 
-    switch (global_config.filter_mode) {
-        case FILTER_USER:
-            if (is_kernel_addr) return;
-            break;
-        case FILTER_KERNEL:
-            if (!is_kernel_addr) return;
-            break;
-        case FILTER_ALL:
-        default:
-            // 处理所有地址，不做过滤
-            break;
-    }
+    // 设置安全边界，所有读取都不能超过这个指针
+    char *end_ptr = (char *)header + header->size;
+    char *ptr = (char *)header + sizeof(struct perf_event_header);
 
-    // 内核态地址处理
-    if (is_kernel_addr) {
-        const char *kernel_symbol = find_kernel_symbol(sys->kernel_symbols, data->ip);
-        if (global_config.verbose) {
-            printf("PID: %d, IP: 0x%lx, Symbol: %s in [kernel]\n", 
-                   data->pid, data->ip, kernel_symbol);
-        } else {
-            printf("%d: %s [kernel]\n", data->pid, kernel_symbol);
+    // 1. 安全地读取 IP
+    if (ptr + sizeof(uint64_t) > end_ptr) return;
+    result->ip = *(uint64_t *)ptr;
+    ptr += sizeof(uint64_t);
+
+    // 2. 安全地读取 PID/TID
+    if (ptr + sizeof(uint64_t) > end_ptr) return;
+    result->pid = *(uint32_t *)ptr;
+    result->tid = *(uint32_t *)(ptr + 4);
+    ptr += sizeof(uint64_t);
+
+    if (global_config.use_lbr) {
+        // LBR 模式: 安全地解析分支栈
+        if (ptr + sizeof(uint64_t) > end_ptr) return;
+        uint64_t nr_from_data = *(uint64_t *)ptr;
+        ptr += sizeof(uint64_t);
+
+        // 根据剩余字节和最大深度，计算实际要复制的分支数量
+        uint64_t remaining_bytes = end_ptr - ptr;
+        uint64_t nr_from_size = remaining_bytes / sizeof(struct perf_branch_entry);
+        uint64_t nr = (nr_from_data < nr_from_size) ? nr_from_data : nr_from_size;
+        uint64_t count_to_copy = (nr < max_ips) ? nr : max_ips;
+
+        result->nr = 0;
+        struct perf_branch_entry *branches = (struct perf_branch_entry *)ptr;
+        for (uint64_t i = 0; i < count_to_copy; i++) {
+            // 我们只关心分支的来源地址 'from'，它构成了调用栈
+            if (branches[i].from) {
+                result->ips[result->nr++] = branches[i].from;
+            }
         }
-        return; // 内核地址处理完毕，直接返回
-    }
-
-    /**
-     * 步骤2：进程查找或创建 (仅用户态)
-     * 根据PID查找进程信息，如果进程不存在则创建：
-     * - 在进程哈希表中查找
-     * - 如果未找到，创建新的进程信息并解析内存映射
-     * - 内存映射包括所有VMA区域，用于后续地址查找
-     */
-    struct process_info* proc_info = find_new_process(sys->process_table, data->pid);
-    if (!proc_info) {
-        // 进程创建失败（通常是由于内存不足或权限问题）
-        return;
-    }
-
-    /**
-     * 步骤3：VMA查找
-     * 在给定进程的VMA红黑树中查找包含指令地址的内存区域：
-     * - 使用红黑树实现O(log n)查找
-     * - VMA包含起始地址、结束地址、文件映射信息
-     * - 如果地址不在任何VMA范围内，返回NULL
-     */
-    struct virtual_memory_area* vma_info = find_vma_from_process(proc_info, data->ip);
-    if (!vma_info) {
-        // 地址不在任何已知的VMA范围内，可能是匿名内存或新创建的映射
-        return;
-    }
-
-    /**
-     * 步骤4：计算相对地址
-     * 将运行时地址转换为ELF文件中的相对偏移：
-     * 相对地址 = (运行时地址 - VMA起始地址) + 文件偏移
-     *
-     * 这个转换是必要的，因为运行时地址是虚拟地址，
-     * 而ELF符号表中的地址是相对于文件开头的偏移
-     */
-    uint64_t rel_addr = get_relative_address(data->ip, vma_info);
-
-    /**
-     * 步骤5：ELF文件查找或解析
-     * 根据VMA对应的文件名获取ELF文件信息：
-     * - 先在ELF缓存中查找
-     * - 如果未找到，解析ELF文件并创建缓存
-     * - 使用引用计数管理缓存生命周期
-     */
-    struct elf_file* elf = find_or_create_elf(sys, vma_info->mapping_name);
-    if (!elf) {
-        // ELF文件解析失败（可能文件不存在或格式错误）
-        return;
-    }
-
-    /**
-     * 步骤6：符号查找
-     * 在ELF文件的符号表中查找相对地址对应的函数名称：
-     * - 使用红黑树实现O(log n)符号查找
-     * - 支持函数符号、对象符号等多种类型
-     * - 如果未找到符号，返回"unknown_function"
-     */
-    const char* symbol_name = find_symbol_name_from_elf(elf, rel_addr);
-
-    /**
-     * 步骤7：结果输出
-     * 根据详细输出标志决定输出格式：
-     * 详细模式：包含PID、地址、符号名、ELF文件路径
-     * 简洁模式：只显示PID和符号名
-     */
-    if (global_config.verbose) {
-        printf("PID: %d, IP: 0x%lx, Symbol: %s in %s\n", 
-               data->pid, data->ip, symbol_name, elf->file_path);
     } else {
-        printf("%d: %s\n", data->pid, symbol_name);
+        // 软件模式: 安全地解析调用栈
+        if (ptr + sizeof(uint64_t) > end_ptr) return;
+        uint64_t nr_from_data = *(uint64_t *)ptr;
+        ptr += sizeof(uint64_t);
+
+        // 根据记录总大小计算真实的调用栈深度，防止读取垃圾值
+        uint64_t remaining_bytes = end_ptr - ptr;
+        uint64_t nr_from_size = remaining_bytes / sizeof(uint64_t);
+
+        // 取两个nr中较小的一个，并确保不超过我们自己的缓冲区大小
+        uint64_t nr = (nr_from_data < nr_from_size) ? nr_from_data : nr_from_size;
+        uint64_t count_to_copy = (nr < max_ips) ? nr : max_ips;
+        
+        result->nr = count_to_copy;
+        if (count_to_copy > 0) {
+            memcpy(result->ips, ptr, count_to_copy * sizeof(uint64_t));
+        }
+    }
+}
+
+/**
+ * @brief 对完整的调用链进行符号化并打印结果。
+ * @param sys 系统上下文，包含进程哈希表和ELF缓存。
+ * @param callchain 解析后的调用链数据，包括PID、IP和栈。 
+ *
+ * 此函数遍历调用链中的每个地址，将其解析为符号（函数名），
+ * 并打印符号化的栈回溯。
+ */
+void symbolize_sample(struct system_context *sys, struct callchain_result *callchain) {
+    extern struct profiling_config global_config;
+    
+    // 将主IP和调用链IP合并到一个列表中进行处理。
+    uint64_t all_ips[callchain->nr + 2]; // +1 for IP, +1 for safety
+    int valid_ips_count = 0;
+
+    // 首先添加主IP，过滤掉内核标记
+    if (callchain->ip && callchain->ip < PERF_CONTEXT_MAX) {
+        all_ips[valid_ips_count++] = callchain->ip;
+    }
+
+    // 添加调用链IP，过滤掉内核标记
+    for (uint64_t i = 0; i < callchain->nr; i++) {
+        if (callchain->ips[i] < PERF_CONTEXT_MAX) {
+            all_ips[valid_ips_count++] = callchain->ips[i];
+        }
+    }
+
+    // 对链中的每个地址进行符号化和打印
+    for (int i = 0; i < valid_ips_count; i++) {
+        uint64_t current_ip = all_ips[i];
+        
+        bool is_kernel_addr = (current_ip & 0x8000000000000000ULL) != 0;
+
+        // 地址空间过滤
+        switch (global_config.filter_mode) {
+            case FILTER_USER: if (is_kernel_addr) continue; break;
+            case FILTER_KERNEL: if (!is_kernel_addr) continue; break;
+            default: break;
+        }
+
+        // 缩进以显示栈深度
+        for (int j = 0; j < i; j++) {
+            printf("  ");
+        }
+
+        if (is_kernel_addr) {
+            const char *kernel_symbol = find_kernel_symbol(sys->kernel_symbols, current_ip);
+            printf("PID: %d, IP: 0x%lx, Symbol: %s in [kernel]\n", 
+                   callchain->pid, current_ip, kernel_symbol);
+        } else {
+            struct process_info* proc_info = find_new_process(sys->process_table, callchain->pid);
+            if (!proc_info) {
+                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [process not found]\n", callchain->pid, current_ip);
+                continue;
+            }
+
+            // 通过比较进程启动时间来检测PID复用
+            unsigned long long current_start_time = get_process_start_time(proc_info->process_id);
+            if (proc_info->start_time != current_start_time) {
+                if (global_config.verbose) {
+                    printf("PID %d recycled. Invalidating cache.\n", proc_info->process_id);
+                }
+                remove_process(sys, proc_info->process_id);
+                proc_info = find_new_process(sys->process_table, callchain->pid);
+                if (!proc_info) {
+                    if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [process gone after recycle]\n", callchain->pid, current_ip);
+                    continue;
+                }
+            }
+
+            // 检查VMA树是否有效。如果树为空，说明进程内存映射解析失败（可能进程已退出），
+            // 此时调用find_vma_from_process会因访问未初始化的树而导致段错误。
+            if (proc_info->memory_map_tree.rb_node == NULL) {
+                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [VMA not available for process]\n", callchain->pid, current_ip);
+                continue;
+            }
+
+            struct virtual_memory_area* vma_info = find_vma_from_process(proc_info, current_ip);
+            if (!vma_info) {
+                 if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [unknown_vma]\n", callchain->pid, current_ip);
+                 continue;
+            }
+
+            // 检查VMA是否映射到一个我们可以分析的ELF文件。
+            // 跳过匿名内存、堆、栈以及[vdso]等特殊区域。
+            if (!vma_info->mapping_name || vma_info->mapping_name[0] == '\0' || vma_info->mapping_name[0] == '[') {
+                continue;
+            }
+
+            // 如果VMA尚未关联ELF文件，则查找或创建它，然后缓存指针
+            if (!vma_info->elf_file) {
+                vma_info->elf_file = find_or_create_elf(sys, callchain->pid, vma_info->mapping_name);
+            }
+            
+            struct elf_file* elf = vma_info->elf_file;
+            if (!elf) {
+                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [unknown_elf]\n", callchain->pid, current_ip);
+                continue;
+            }
+
+            uint64_t rel_addr = get_relative_address(current_ip, vma_info);
+            const char* symbol_name = find_symbol_name_from_elf(elf, rel_addr);
+            if (global_config.verbose) {
+                 printf("PID: %d, IP: 0x%lx, Symbol: %s in %s\n", 
+                       callchain->pid, current_ip, symbol_name, elf->file_path);
+            } else {
+                 printf("%d: %s\n", callchain->pid, symbol_name);
+            }
+        }
+    }
+    // 如果打印了栈，则添加一个分隔符以提高可读性
+    if (valid_ips_count > 0) {
+        printf("\n");
     }
 }
