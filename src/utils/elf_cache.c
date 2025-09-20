@@ -13,7 +13,7 @@ struct elf_cache_manager global_elf_cache = {0};
 
 // 初始化内存缓存
 struct memory_cache* cache_init(int fd, size_t file_size) {
-    struct memory_cache* cache = calloc(1, sizeof(struct memory_cache));
+    struct memory_cache* cache = (struct memory_cache*)calloc(1, sizeof(struct memory_cache));
     if (!cache) {
         return NULL;
     }
@@ -89,7 +89,7 @@ static int read_from_file(struct memory_cache* cache, uint64_t offset, void* buf
 
 // 创建新的缓存块
 static struct cache_block* create_cache_block(struct memory_cache* cache, uint64_t offset) {
-    struct cache_block* block = calloc(1, sizeof(struct cache_block));
+    struct cache_block* block = (struct cache_block*)calloc(1, sizeof(struct cache_block));
     if (!block) {
         return NULL;
     }
@@ -115,20 +115,20 @@ static struct cache_block* create_cache_block(struct memory_cache* cache, uint64
 
 // 插入缓存块到RB树
 static void insert_cache_block(struct memory_cache* cache, struct cache_block* block) {
-    struct rb_node **new = &cache->cache_tree.rb_node, *parent = NULL;
+    struct rb_node **new_node = &cache->cache_tree.rb_node, *parent = NULL;
 
-    while (*new) {
-        struct cache_block* this = rb_entry(*new, struct cache_block, cache_rb_node);
-        parent = *new;
+    while (*new_node) {
+        struct cache_block* current_block = rb_entry(*new_node, struct cache_block, cache_rb_node);
+        parent = *new_node;
 
-        if (block->offset < this->offset) {
-            new = &((*new)->rb_left);
+        if (block->offset < current_block->offset) {
+            new_node = &((*new_node)->rb_left);
         } else {
-            new = &((*new)->rb_right);
+            new_node = &((*new_node)->rb_right);
         }
     }
 
-    rb_link_node(&block->cache_rb_node, parent, new);
+    rb_link_node(&block->cache_rb_node, parent, new_node);
     rb_insert_color(&block->cache_rb_node, &cache->cache_tree);
 }
 
