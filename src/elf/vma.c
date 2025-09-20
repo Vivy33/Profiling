@@ -171,6 +171,7 @@ int parse_process_memory_maps(struct process_info* proc) {
         if (region_name[0] != '\0') {
             vma->mapping_name = strdup(region_name);
         }
+        vma->elf_file = NULL; // 显式初始化ELF文件指针
 
         /**
          * 将VMA插入红黑树：
