@@ -37,7 +37,6 @@
 #define PATH_MAX 4096
 
 // 静态辅助函数前向声明
-static char* get_elf_build_id(const char* filename);
 static void remove_elf(struct elf_file_cache* elf_table, const char* build_id);
 static struct elf_symbol_collection* build_symbol_collection(Elf* e, struct elf_file* elf_info);
 static char* get_elf_build_id_from_elf(Elf* e);
@@ -81,13 +80,21 @@ static void insert_elf_into_table(struct elf_file_cache* elf_table, struct elf_f
  * @param filename ELF文件的路径。
  * @return 成功时返回指向elf_file结构体的指针，失败时返回NULL。
  */
-struct elf_file* find_or_create_elf(struct system_context* sys, const char *filename) {
-    if (!filename || filename[0] == '\0' || filename[0] == '[') {
+struct elf_file* find_or_create_elf(struct system_context* sys, int pid, const char *filename) {
+    if (!filename || filename[0] != '/') {
         return NULL; // 忽略匿名内存区域或无效名称
     }
 
     char host_path[PATH_MAX];
-    snprintf(host_path, sizeof(host_path), "%s", filename);
+    snprintf(host_path, sizeof(host_path), "/proc/%d/root/%s", pid, filename);
+
+    // 修正：移除多余的斜杠，如果filename已经是绝对路径
+    if (filename[0] == '/') {
+        snprintf(host_path, sizeof(host_path), "/proc/%d/root%s", pid, filename);
+    } else {
+        // 这是针对非绝对路径（如vdso）的修正
+        snprintf(host_path, sizeof(host_path), "/proc/%d/root/%s", pid, filename);
+    }
 
     int fd = -1;
     Elf* e = elf_parser_init(host_path, &fd);
@@ -112,7 +119,7 @@ struct elf_file* find_or_create_elf(struct system_context* sys, const char *file
     }
 
     // 未找到ELF，创建一个新的
-    struct elf_file_hash_node* new_node = calloc(1, sizeof(struct elf_file_hash_node));
+    struct elf_file_hash_node* new_node = (struct elf_file_hash_node*)calloc(1, sizeof(struct elf_file_hash_node));
     if (!new_node) {
         perror("为new_node分配内存失败");
         free(build_id);
@@ -149,26 +156,21 @@ struct elf_file* find_or_create_elf(struct system_context* sys, const char *file
 
 
 /**
- * @brief 减少ELF文件的引用计数。如果引用计数归零，则从缓存中移除该文件。
- * @param elf_table ELF文件缓存表指针
- * @param filename ELF文件的路径
+ * @brief (重构后) 通过指针减少ELF文件的引用计数。如果引用计数归零，则从缓存中移除。
+ * 
+ * 这是新的、更安全的ELF释放机制。它直接操作elf_file对象，避免了旧版release_elf中
+ * 不安全且低效的文件重读操作。
+ *
+ * @param elf_table ELF文件缓存表指针。
+ * @param elf_obj 指向要释放的elf_file对象的指针。
  */
-void release_elf(struct elf_file_cache* elf_table, const char* filename) {
-    if (!filename || !elf_table) return;
+void release_elf_by_ptr(struct elf_file_cache* elf_table, struct elf_file* elf_obj) {
+    if (!elf_obj) return;
 
-    char* build_id = get_elf_build_id(filename);
-    if (!build_id) {
-        return; // 无法在没有build_id的情况下找到它
+    elf_obj->reference_count--;
+    if (elf_obj->reference_count == 0) {
+        remove_elf(elf_table, elf_obj->build_id);
     }
-
-    struct elf_file* elf_obj = find_elf_in_table(elf_table, build_id);
-    if (elf_obj) {
-        elf_obj->reference_count--;
-        if (elf_obj->reference_count == 0) {
-            remove_elf(elf_table, build_id);
-        }
-    }
-    free(build_id);
 }
 
 /**
@@ -249,23 +251,6 @@ void clear_elf_cache(struct elf_file_cache* elf_table) {
     }
 }
 
-/**
- * @brief 从ELF文件中提取GNU build ID。
- * @param filename ELF文件的路径。
- * @return 堆分配的build ID十六进制字符串，如果未找到或出错则返回NULL。
- *         调用者负责释放返回的字符串。
- */
-static char* get_elf_build_id(const char* filename) {
-    int fd = -1;
-    Elf* e = elf_parser_init(filename, &fd);
-    if (!e) {
-        return NULL;
-    }
-    char* build_id_str = get_elf_build_id_from_elf(e);
-    elf_parser_cleanup(e, fd);
-    return build_id_str;
-}
-
 // =================================================================
 // 新增静态辅助函数 (重构核心)
 // =================================================================
@@ -284,12 +269,6 @@ static char* get_elf_build_id(const char* filename) {
 static Elf* elf_parser_init(const char* filename, int* out_fd) {
     *out_fd = open(filename, O_RDONLY);
     if (*out_fd < 0) return NULL;
-
-    if (elf_version(EV_CURRENT) == EV_NONE) {
-        close(*out_fd);
-        *out_fd = -1;
-        return NULL;
-    }
 
     Elf* e = elf_begin(*out_fd, ELF_C_READ, NULL);
     if (!e) {
@@ -339,15 +318,27 @@ static char* get_elf_build_id_from_elf(Elf* e) {
                 GElf_Nhdr nhdr;
                 size_t offset = 0;
                 while (offset + sizeof(GElf_Nhdr) < data->d_size) {
-                    if (!gelf_getnote(data, offset, &nhdr, NULL, NULL)) {
+                    size_t name_offset, desc_offset;
+                    if (!gelf_getnote(data, offset, &nhdr, &name_offset, &desc_offset)) {
                         break;
                     }
+
+                    // 关键修复 #2: 健全性检查，防止整数溢出
+                    if (nhdr.n_namesz > data->d_size || nhdr.n_descsz > data->d_size) {
+                        break; // 畸形的note，尺寸值不合理
+                    }
+
                     size_t name_sz_aligned = (nhdr.n_namesz + 3) & ~3;
                     size_t desc_sz_aligned = (nhdr.n_descsz + 3) & ~3;
                     
+                    // 关键修复 #1: 在处理之前，检查整个note是否在边界内
+                    if (offset + sizeof(GElf_Nhdr) + name_sz_aligned + desc_sz_aligned > data->d_size) {
+                        break; // 畸形的note，尺寸超出节区边界
+                    }
+
                     if (nhdr.n_type == NT_GNU_BUILD_ID && nhdr.n_descsz > 0) {
                         unsigned char* build_id_raw = (unsigned char*)data->d_buf + offset + sizeof(GElf_Nhdr) + name_sz_aligned;
-                        build_id_str = malloc(nhdr.n_descsz * 2 + 1);
+                        build_id_str = (char*)malloc(nhdr.n_descsz * 2 + 1);
                         if (build_id_str) {
                             for (size_t i = 0; i < nhdr.n_descsz; i++) {
                                 sprintf(build_id_str + i * 2, "%02x", build_id_raw[i]);
@@ -406,7 +397,7 @@ static void process_symbol_section(Elf* e, Elf_Scn* scn, GElf_Shdr* shdr, struct
         gelf_getsym(data, i, &sym);
 
         if (GELF_ST_TYPE(sym.st_info) == STT_FUNC && sym.st_size > 0) {
-            struct symbol_info* new_sym = calloc(1, sizeof(struct symbol_info));
+            struct symbol_info* new_sym = (struct symbol_info*)calloc(1, sizeof(struct symbol_info));
             if (!new_sym) continue;
 
             new_sym->symbol_name = strdup(elf_strptr(e, shdr->sh_link, sym.st_name));
@@ -431,7 +422,7 @@ static void process_symbol_section(Elf* e, Elf_Scn* scn, GElf_Shdr* shdr, struct
  *         如果解析失败或未找到任何函数符号，则返回NULL。
  */
 static struct elf_symbol_collection* build_symbol_collection(Elf* e, struct elf_file* elf_info) {
-    struct elf_symbol_collection* symbols = calloc(1, sizeof(struct elf_symbol_collection));
+    struct elf_symbol_collection* symbols = (struct elf_symbol_collection*)calloc(1, sizeof(struct elf_symbol_collection));
     if (!symbols) {
         return NULL;
     }
