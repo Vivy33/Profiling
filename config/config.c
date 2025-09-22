@@ -15,13 +15,11 @@
                         - 缓存条目 - 死进程的VMA、符号、ELF缓存
                         - 红黑树节点 - 进程树中已退出的节点
                         - 内存映射 - 死进程的内存映射信息
- * --verbose            启用详细输出模式
  * --help               显示帮助信息
  *
  * 【使用示例】
- * ./my_elf_reader --frequency=1000 --filter=kernel --verbose
- * ./my_elf_reader --frequency=50 --filter=user --cleanup=2
- * ./my_elf_reader --help
+ * ./profiling_tool --frequency=50 --filter=user --cleanup=2
+ * ./profiling_tool --help
  */
 
 #include <stdio.h>
@@ -40,8 +38,8 @@ void print_usage(const char* program_name) {
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
+    printf("  --output-dir=PATH  Required: Directory for SQLite database storage\n");
     printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
-    printf("  --verbose          Enable verbose output\n");
     printf("  --help             Show this help message\n");
 }
 
@@ -58,8 +56,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->filter_mode = FILTER_ALL;
     config->cleanup_interval = DEFAULT_CLEANUP_INTERVAL;
     config->max_stack_depth = DEFAULT_MAX_STACK_DEPTH;
-    config->verbose = false;
     config->use_lbr = false;
+    config->db_output_dir = NULL;
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -92,8 +90,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
                 fprintf(stderr, "Error: Invalid cleanup interval\n");
                 return -1;
             }
-        } else if (strcmp(argv[i], "--verbose") == 0) {
-            config->verbose = true;
+        } else if (strncmp(argv[i], "--output-dir=", 13) == 0) {
+            config->db_output_dir = argv[i] + 13;
         } else if (strcmp(argv[i], "--lbr") == 0) {
             config->use_lbr = true;
         } else if (strcmp(argv[i], "--help") == 0) {
