@@ -100,15 +100,22 @@ struct elf_file_cache {
     struct elf_file_hash_node* cache_buckets[HASHTABLE_SIZE]; // 哈希桶
 };
 
+// 前向声明
+struct db_writer_context_t;
+
 // 系统全局信息 - 管理整个系统的进程和ELF文件
 struct system_context {
     struct process_hash_table* process_table;  // 进程哈希表
     struct elf_file_cache* elf_cache;          // ELF文件缓存
     struct rb_root *kernel_symbols;            // 内核符号红黑树
+    struct db_writer_context_t *db_context;    // 数据库写入器上下文
+    uint64_t monotonic_start_ns;               // CLOCK_MONOTONIC 初始时间戳 (纳秒)
+    uint64_t realtime_start_ns;                // CLOCK_REALTIME 初始时间戳 (纳秒)
 };
 
 // 调用栈解析结果
 struct callchain_result {
+    uint64_t timestamp_ns; // 内核提供的纳秒级高精度时间戳
     uint32_t pid, tid;
     uint64_t ip;
     uint64_t nr;
