@@ -17,19 +17,27 @@
  * - perf_event_manager: perf事件管理器，封装所有性能事件
  * 
  * 使用示例：
- * 系统级监控：sudo ./my_elf_reader --mode=system --frequency=100
- * 单进程分析：sudo ./my_elf_reader --mode=target --pid=1234
- * 多进程对比：sudo ./my_elf_reader --mode=multi --pids=1001,1002,1003
+ * 系统级监控：sudo ./profiling_tool --mode=system --frequency=100
+ * 单进程分析：sudo ./profiling_tool --mode=target --pid=1234
+ * 多进程对比：sudo ./profiling_tool --mode=multi --pids=1001,1002,1003
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <libelf.h>
+#include <signal.h>
 
 #include "../include/header.h"
 #include "../include/config.h"
 #include "../include/perf.h"
+#include "../include/database.h"
+
+volatile sig_atomic_t stop_profiling = 0;
+
+void signal_handler(int signum) {
+    stop_profiling = 1;
+}
 
 /**
  * @brief 全局配置对象
@@ -61,6 +69,10 @@ struct profiling_config global_config;
  * 错误处理：每个阶段都有完善的错误处理和资源清理机制
  */
 int main(int argc, char* argv[]) {
+    // 注册信号处理程序
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
     /**
      * 阶段0: 库初始化
      * 在任何其他操作之前，初始化libelf库
@@ -73,7 +85,7 @@ int main(int argc, char* argv[]) {
     /**
      * 阶段1：配置解析
      * 解析命令行参数，填充global_config结构
-     * 支持参数：--mode, --pid, --exec, --pids, --execs, --frequency, --filter, --cleanup, --verbose
+     * 支持参数：--mode, --pid, --exec, --pids, --execs, --frequency, --filter, --cleanup
      */
     if (parse_command_line(argc, argv, &global_config) != 0) {
         fprintf(stderr, "Error: Failed to parse command line arguments\n");
@@ -93,6 +105,22 @@ int main(int argc, char* argv[]) {
     }
 
     /**
+     * 阶段3: 数据库写入器初始化
+     * 强制要求必须指定输出目录
+     */
+    if (!global_config.db_output_dir) {
+        fprintf(stderr, "Error: --output-dir parameter is required for database mode\n");
+        return 1;
+    }
+
+    db_writer_context_t *db_context = db_writer_init(global_config.db_output_dir);
+    if (!db_context) {
+        fprintf(stderr, "Error: Failed to initialize database writer\n");
+        return 1;
+    }
+    db_writer_start(db_context);
+
+    /**
      * 阶段4：perf事件初始化
      * 根据配置初始化Linux perf_event：
      * - 系统模式：为每个CPU创建事件，监控所有进程
@@ -105,12 +133,11 @@ int main(int argc, char* argv[]) {
     if (!manager) {
         fprintf(stderr, "Error: Failed to initialize perf events.\n");
         fprintf(stderr, "Possible causes: insufficient permissions, perf subsystem disabled\n");
+        if (db_context) {
+            db_writer_stop(db_context);
+            db_writer_wait(db_context);
+        }
         return 1;
-    }
-
-    if (global_config.verbose) {
-        printf("Successfully started %d perf events on %d CPUs.\n", 
-               manager->num_events, manager->num_cpus);
     }
 
     /**
@@ -124,8 +151,14 @@ int main(int argc, char* argv[]) {
     if (initialize_system(&system_info)) {
         fprintf(stderr, "Error: Failed to initialize system context\n");
         perf_event_cleanup_manager(manager);
+        if (db_context) {
+            db_writer_stop(db_context);
+            db_writer_wait(db_context);
+        }
         return 1;
     }
+    // 将db_context传递给system_info，以便在main_loop中使用
+    system_info.db_context = db_context;
 
     /**
      * 阶段6：主事件循环
@@ -148,6 +181,10 @@ int main(int argc, char* argv[]) {
      */
     cleanup_system(&system_info);
     perf_event_cleanup_manager(manager);
+    if (db_context) {
+        db_writer_stop(db_context);
+        db_writer_wait(db_context);
+    }
 
     return 0;
 }
