@@ -1,0 +1,5 @@
+*.o
+query_tool
+profiling_tool
+log
+tmp
