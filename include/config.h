@@ -17,8 +17,8 @@ struct profiling_config {
     enum filter_mode filter_mode;       // 显示过滤模式
     int cleanup_interval;               // 死进程清理间隔 (秒)
     int max_stack_depth;                // 最大栈回溯深度
-    bool verbose;                       // 详细输出
     bool use_lbr;                       // 是否启用LBR
+    char* db_output_dir;                // SQLite数据库输出目录
 };
 
 // 函数声明
