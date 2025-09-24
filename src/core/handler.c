@@ -24,8 +24,9 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "../../include/header.h"
+#include "../include/header.h"
 #include "../../include/config.h"
+#include "../../include/database.h"
 
 // PERF_CONTEXT_MAX 是有效IP地址的上限。
 // 超过此值的地址是上下文标记。此值来自内核UAPI
@@ -63,6 +64,11 @@ void parse_sample_data(struct perf_event_header *header, struct callchain_result
     if (ptr + sizeof(uint64_t) > end_ptr) return;
     result->pid = *(uint32_t *)ptr;
     result->tid = *(uint32_t *)(ptr + 4);
+    ptr += sizeof(uint64_t);
+
+    // 3. 安全地读取时间戳
+    if (ptr + sizeof(uint64_t) > end_ptr) return;
+    result->timestamp_ns = *(uint64_t *)ptr;
     ptr += sizeof(uint64_t);
 
     if (global_config.use_lbr) {
@@ -114,9 +120,10 @@ void parse_sample_data(struct perf_event_header *header, struct callchain_result
  * 此函数遍历调用链中的每个地址，将其解析为符号（函数名），
  * 并打印符号化的栈回溯。
  */
-void symbolize_sample(struct system_context *sys, struct callchain_result *callchain) {
+void symbolize_sample(struct system_context *sys, struct callchain_result *callchain, db_writer_context_t *db_context, uint64_t timestamp_ns) {
     extern struct profiling_config global_config;
     
+
     // 将主IP和调用链IP合并到一个列表中进行处理。
     uint64_t all_ips[callchain->nr + 2]; // +1 for IP, +1 for safety
     int valid_ips_count = 0;
@@ -133,10 +140,23 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
         }
     }
 
-    // 对链中的每个地址进行符号化和打印
+    // 获取进程信息用于构建火焰图
+    struct process_info* proc_info = find_new_process(sys->process_table, callchain->pid);
+    const char* process_name = (proc_info && proc_info->process_name) ? proc_info->process_name : "unknown";
+
+    // 构建火焰图兼容的调用链
+    char flame_buffer[16384] = {0};
+    int flame_len = 0;
+
+    // 火焰图格式：进程名;函数1;函数2;函数3
+    // 首先添加进程名称
+    flame_len += snprintf(flame_buffer + flame_len, sizeof(flame_buffer) - flame_len, "%s", process_name);
+
+    // 对链中的每个地址进行符号化，构建调用链
     for (int i = 0; i < valid_ips_count; i++) {
         uint64_t current_ip = all_ips[i];
-        
+
+        // 黑魔法
         bool is_kernel_addr = (current_ip & 0x8000000000000000ULL) != 0;
 
         // 地址空间过滤
@@ -146,78 +166,112 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
             default: break;
         }
 
-        // 缩进以显示栈深度
-        for (int j = 0; j < i; j++) {
-            printf("  ");
-        }
-
+        // 构建函数名
+        char func_name[512] = {0};
         if (is_kernel_addr) {
             const char *kernel_symbol = find_kernel_symbol(sys->kernel_symbols, current_ip);
-            printf("PID: %d, IP: 0x%lx, Symbol: %s in [kernel]\n", 
-                   callchain->pid, current_ip, kernel_symbol);
+            snprintf(func_name, sizeof(func_name), "%s [kernel]", kernel_symbol);
         } else {
-            struct process_info* proc_info = find_new_process(sys->process_table, callchain->pid);
             if (!proc_info) {
-                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [process not found]\n", callchain->pid, current_ip);
-                continue;
-            }
-
-            // 通过比较进程启动时间来检测PID复用
-            unsigned long long current_start_time = get_process_start_time(proc_info->process_id);
-            if (proc_info->start_time != current_start_time) {
-                if (global_config.verbose) {
-                    printf("PID %d recycled. Invalidating cache.\n", proc_info->process_id);
-                }
-                remove_process(sys, proc_info->process_id);
-                proc_info = find_new_process(sys->process_table, callchain->pid);
-                if (!proc_info) {
-                    if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [process gone after recycle]\n", callchain->pid, current_ip);
-                    continue;
-                }
-            }
-
-            // 检查VMA树是否有效。如果树为空，说明进程内存映射解析失败（可能进程已退出），
-            // 此时调用find_vma_from_process会因访问未初始化的树而导致段错误。
-            if (proc_info->memory_map_tree.rb_node == NULL) {
-                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [VMA not available for process]\n", callchain->pid, current_ip);
-                continue;
-            }
-
-            struct virtual_memory_area* vma_info = find_vma_from_process(proc_info, current_ip);
-            if (!vma_info) {
-                 if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [unknown_vma]\n", callchain->pid, current_ip);
-                 continue;
-            }
-
-            // 检查VMA是否映射到一个我们可以分析的ELF文件。
-            // 跳过匿名内存、堆、栈以及[vdso]等特殊区域。
-            if (!vma_info->mapping_name || vma_info->mapping_name[0] == '\0' || vma_info->mapping_name[0] == '[') {
-                continue;
-            }
-
-            // 如果VMA尚未关联ELF文件，则查找或创建它，然后缓存指针
-            if (!vma_info->elf_file) {
-                vma_info->elf_file = find_or_create_elf(sys, callchain->pid, vma_info->mapping_name);
-            }
-            
-            struct elf_file* elf = vma_info->elf_file;
-            if (!elf) {
-                if (i == 0) printf("PID: %d, IP: 0x%lx, Symbol: [unknown_elf]\n", callchain->pid, current_ip);
-                continue;
-            }
-
-            uint64_t rel_addr = get_relative_address(current_ip, vma_info);
-            const char* symbol_name = find_symbol_name_from_elf(elf, rel_addr);
-            if (global_config.verbose) {
-                 printf("PID: %d, IP: 0x%lx, Symbol: %s in %s\n", 
-                       callchain->pid, current_ip, symbol_name, elf->file_path);
+                snprintf(func_name, sizeof(func_name), "[unknown_process]");
             } else {
-                 printf("%d: %s\n", callchain->pid, symbol_name);
+                // 通过比较进程启动时间来检测PID复用
+                unsigned long long current_start_time = get_process_start_time(proc_info->process_id);
+                if (proc_info->start_time != current_start_time) {
+                    remove_process(sys, proc_info->process_id);
+                    proc_info = find_new_process(sys->process_table, callchain->pid);
+                    if (!proc_info) {
+                        snprintf(func_name, sizeof(func_name), "[process_recycled]");
+                    }
+                }
+
+                if (proc_info && proc_info->memory_map_tree.rb_node != NULL) {
+                    struct virtual_memory_area* vma_info = find_vma_from_process(proc_info, current_ip);
+                    if (!vma_info) {
+                        snprintf(func_name, sizeof(func_name), "[unknown_vma]");
+                    } else if (!vma_info->mapping_name || vma_info->mapping_name[0] == '\0' || vma_info->mapping_name[0] == '[') {
+                        const char* area_name = vma_info->mapping_name ? vma_info->mapping_name : "[anonymous]";
+                        snprintf(func_name, sizeof(func_name), "%s", area_name);
+                    } else {
+                        if (!vma_info->elf_file) {
+                            vma_info->elf_file = find_or_create_elf(sys, callchain->pid, vma_info->mapping_name);
+                        }
+
+                        struct elf_file* elf = vma_info->elf_file;
+                        if (!elf) {
+                            snprintf(func_name, sizeof(func_name), "[unknown_elf:%s]", vma_info->mapping_name);
+                        } else {
+                            uint64_t rel_addr = get_relative_address(current_ip, vma_info);
+                            const char* symbol_name = find_symbol_name_from_elf(elf, rel_addr);
+                            if (strlen(symbol_name) > 0) {
+                                snprintf(func_name, sizeof(func_name), "%s", symbol_name);
+                            } else {
+                                snprintf(func_name, sizeof(func_name), "[unknown_symbol:%s]", elf->file_path);
+                            }
+                        }
+                    }
+                } else {
+                    snprintf(func_name, sizeof(func_name), "[vma_unavailable]");
+                }
             }
         }
+
+        // 添加到调用链
+        if (flame_len + strlen(func_name) + 2 < sizeof(flame_buffer)) {
+            if (flame_len > strlen(process_name)) {
+                strcat(flame_buffer, ";");
+            }
+            strcat(flame_buffer, func_name);
+        }
     }
-    // 如果打印了栈，则添加一个分隔符以提高可读性
+
+    // 构建显示用的栈信息（用于调试和显示）
+    char display_buffer[16384] = {0};
+    int display_len = 0;
+    for (int i = 0; i < valid_ips_count; i++) {
+        uint64_t current_ip = all_ips[i];
+
+        for (int j = 0; j < i; j++) {
+            display_len += snprintf(display_buffer + display_len, sizeof(display_buffer) - display_len, "  ");
+        }
+
+        bool is_kernel_addr = (current_ip & 0x8000000000000000ULL) != 0;
+        if (is_kernel_addr) {
+            const char *kernel_symbol = find_kernel_symbol(sys->kernel_symbols, current_ip);
+            display_len += snprintf(display_buffer + display_len, sizeof(display_buffer) - display_len,
+                                    "%s [kernel]\n", kernel_symbol);
+        } else {
+            display_len += snprintf(display_buffer + display_len, sizeof(display_buffer) - display_len,
+                                    "%s\n", proc_info ? "[user_function]" : "[unknown_process]");
+        }
+    }
+
     if (valid_ips_count > 0) {
-        printf("\n");
+        // 使用火焰图兼容格式：进程名;函数1;函数2;函数3
+        char flame_final[16384 + 256];
+        snprintf(flame_final, sizeof(flame_final), "%s", flame_buffer);
+
+        // 同时存储显示格式：pid|process_name|display_stack
+        char display_final[16384 + 256];
+        snprintf(display_final, sizeof(display_final), "%d|%s|%s",
+                 callchain->pid, process_name, display_buffer);
+
+        uint64_t realtime_timestamp_ns = callchain->timestamp_ns;
+        if (sys->monotonic_start_ns != 0 && sys->realtime_start_ns != 0) {
+            realtime_timestamp_ns = callchain->timestamp_ns - sys->monotonic_start_ns + sys->realtime_start_ns;
+        }
+
+        // 存储两种格式：火焰图格式用于火焰图工具，显示格式用于查询
+        db_writer_push_stack(db_context, realtime_timestamp_ns, flame_final);
+    } else {
+        // 即使没有有效IP，也记录火焰图格式
+        char basic_flame[512];
+        snprintf(basic_flame, sizeof(basic_flame), "%s", process_name);
+
+        uint64_t realtime_timestamp_ns = callchain->timestamp_ns;
+        if (sys->monotonic_start_ns != 0 && sys->realtime_start_ns != 0) {
+            realtime_timestamp_ns = callchain->timestamp_ns - sys->monotonic_start_ns + sys->realtime_start_ns;
+        }
+        db_writer_push_stack(db_context, realtime_timestamp_ns, basic_flame);
     }
 }
