@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <syscall.h>
 #include <linux/perf_event.h>
@@ -72,18 +73,20 @@ static struct perf_event_attr build_perf_attr(const struct profiling_config* con
         // LBR模式: 使用硬件事件，采集分支记录
         pe.type = PERF_TYPE_HARDWARE;
         pe.config = PERF_COUNT_HW_BRANCH_INSTRUCTIONS; // 使用分支指令计数器更适合LBR
-        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_BRANCH_STACK | PERF_SAMPLE_REGS_USER;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_BRANCH_STACK | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_TIME;
         pe.branch_sample_type = PERF_SAMPLE_BRANCH_ANY; // 捕获所有类型的分支
     } else {
         // 默认模式: 基于软件时钟
         pe.type = PERF_TYPE_SOFTWARE;
         pe.config = PERF_COUNT_SW_CPU_CLOCK;
-        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_TIME;
     }
     
     // 明确请求BP(RBP, r_bp=6)和SP(RSP, r_sp=7)寄存器，这对于可靠的栈回溯至关重要。
     // 之前的"Invalid argument"错误是因为我们请求了REGS_USER但没有指定具体哪些寄存器。
     pe.sample_regs_user = (1ULL << 6) | (1ULL << 7);
+    pe.use_clockid = 1;
+    pe.clockid = CLOCK_MONOTONIC;
 
     // 使用频率模式
     pe.freq = 1;
@@ -246,11 +249,6 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
         // 启用事件
         ioctl(fd, PERF_EVENT_IOC_RESET, 0);
         ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-    }
-
-    if (config->verbose) {
-        printf("Initialized %d perf events\n", num_cpus);
-        printf("Sampling frequency: %d Hz\n", config->sampling_frequency);
     }
 
     return manager;
