@@ -30,6 +30,8 @@ ${GREEN}查询工具 - 时间查询${NC}
   --pid <pid>         按进程ID过滤
   --name <名称>       按进程名过滤
   --help              显示此帮助
+  --flame             输出火焰图兼容格式
+  --detailed          输出详细调用栈信息
 
 时间格式示例:
   --time "15:10-15:30"          # 今天的15:10-15:30
@@ -43,6 +45,8 @@ ${GREEN}查询工具 - 时间查询${NC}
   $0 --time "15:10-15:30"
   $0 --time "today 14:00" --pid 1234
   $0 --time "last 30 minutes" --name nginx
+  $0 --time "last 5 minutes" --flame > flame_data.txt
+  $0 --time "last 5 minutes" --detailed --pid 1234
 EOF
 }
 
@@ -102,7 +106,38 @@ parse_time_range() {
 format_output() {
     while IFS='|' read -r stack count; do
         if [[ -n "$stack" ]]; then
-            echo "$stack ($count)"
+            # 火焰图格式：进程名;函数1;函数2;函数3
+            echo "$stack $count"
+        fi
+    done
+}
+
+# 火焰图格式输出
+format_flame() {
+    while IFS='|' read -r stack count; do
+        if [[ -n "$stack" ]]; then
+            # 直接输出火焰图格式：调用链 计数
+            echo "$stack $count"
+        fi
+    done
+}
+
+# 详细显示格式
+format_detailed() {
+    while IFS='|' read -r stack count; do
+        if [[ -n "$stack" ]]; then
+            # 解析火焰图格式
+            IFS=';' read -ra funcs <<< "$stack"
+            if [[ ${#funcs[@]} -gt 0 ]]; then
+                process_name="${funcs[0]}"
+                echo "[$process_name] $count次"
+                for ((i=1; i<${#funcs[@]}; i++)); do
+                    printf "  %s\n" "${funcs[i]}"
+                done
+                echo "---"
+            else
+                echo "$stack $count"
+            fi
         fi
     done
 }
@@ -136,6 +171,14 @@ main() {
             --help)
                 show_help
                 exit 0
+                ;;
+            --flame)
+                format_func="format_flame"
+                shift
+                ;;
+            --detailed)
+                format_func="format_detailed"
+                shift
                 ;;
             *)
                 echo -e "${RED}错误: 未知参数 '$1'${NC}"
@@ -176,7 +219,7 @@ main() {
     [[ -n "$name_filter" ]] && query_cmd="$query_cmd --name $name_filter"
 
     # 执行查询并格式化输出
-    $query_cmd 2>"$DEFAULT_LOG_DIR/query_tool_debug.log" | format_output
+    $query_cmd 2>"$DEFAULT_LOG_DIR/query_tool_debug.log" | ${format_func:-format_output}
 }
 
 # 执行主函数
