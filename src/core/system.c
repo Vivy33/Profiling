@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <elf.h>
+#include <time.h>
 
 #include "../../include/header.h"
 
@@ -68,6 +69,21 @@ int initialize_system(struct system_context* system_info) {
     if (!system_info->kernel_symbols) {
         fprintf(stderr, "警告: 无法加载内核符号, 内核函数名将无法解析。\n");
         // 这是一个非致命错误，程序可以继续运行
+    }
+
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        system_info->monotonic_start_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+    } else {
+        perror("clock_gettime CLOCK_MONOTONIC");
+        system_info->monotonic_start_ns = 0;
+    }
+
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        system_info->realtime_start_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+    } else {
+        perror("clock_gettime CLOCK_REALTIME");
+        system_info->realtime_start_ns = 0;
     }
     
     return 0;
