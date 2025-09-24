@@ -22,20 +22,27 @@
  * 多进程对比：sudo ./profiling_tool --mode=multi --pids=1001,1002,1003
  */
 
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/errno.h> 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <libelf.h>
 #include <signal.h>
 
-#include "../include/header.h"
+#include "../include/header.h" 
 #include "../include/config.h"
 #include "../include/perf.h"
 #include "../include/database.h"
+#include "../include/http_server.h"
+
+#define PATH_MAX 4096
 
 volatile sig_atomic_t stop_profiling = 0;
 
 void signal_handler(int signum) {
+    fprintf(stderr, "DEBUG: Received signal %d, stopping profiling.\n", signum);
     stop_profiling = 1;
 }
 
@@ -69,26 +76,58 @@ struct profiling_config global_config;
  * 错误处理：每个阶段都有完善的错误处理和资源清理机制
  */
 int main(int argc, char* argv[]) {
+    http_server_context_t *http_context = NULL;
     // 注册信号处理程序
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    /**
-     * 阶段0: 库初始化
-     * 在任何其他操作之前，初始化libelf库
-     */
-    if (elf_version(EV_CURRENT) == EV_NONE) {
-        fprintf(stderr, "Error: Failed to initialize libelf\n");
+
+
+    if (parse_command_line(argc, argv, &global_config) != 0) {
+        fprintf(stderr, "Error: Failed to parse command line arguments\n");
+        return 1;
+    }
+
+    // 阶段0: 初始化日志系统
+    char resolved_log_dir[PATH_MAX];
+    if (realpath(global_config.log_output_dir, resolved_log_dir) == NULL) {
+        // 如果realpath失败，可能是目录不存在，尝试创建
+        if (mkdir(global_config.log_output_dir, 0755) == -1 && errno != EEXIST) {
+            fprintf(stderr, "Error: Failed to create log directory %s: %s\n", global_config.log_output_dir, strerror(errno));
+            return 1;
+        }
+        // 再次尝试解析路径
+        if (realpath(global_config.log_output_dir, resolved_log_dir) == NULL) {
+            fprintf(stderr, "Error: Failed to resolve log directory path %s: %s\n", global_config.log_output_dir, strerror(errno));
+            return 1;
+        }
+    }
+    global_config.log_output_dir = strdup(resolved_log_dir);
+    if (!global_config.log_output_dir) {
+        fprintf(stderr, "Error: Failed to allocate memory for log_output_dir\n");
+        return 1;
+    }
+
+    char log_file_path[PATH_MAX];
+    snprintf(log_file_path, sizeof(log_file_path), "%s/profiling_tool.log", global_config.log_output_dir);
+
+    FILE *log_file = fopen(log_file_path, "a");
+    if (log_file) {
+        if (dup2(fileno(log_file), fileno(stderr)) == -1) {
+            fprintf(stderr, "Error: Failed to redirect stderr to log file.\n");
+        }
+        setvbuf(stderr, NULL, _IONBF, 0); // 禁用 stderr 缓冲
+    } else {
+        fprintf(stderr, "Error: Failed to open log file %s for writing: %s\n", log_file_path, strerror(errno));
         return 1;
     }
 
     /**
-     * 阶段1：配置解析
-     * 解析命令行参数，填充global_config结构
-     * 支持参数：--mode, --pid, --exec, --pids, --execs, --frequency, --filter, --cleanup
+     * 阶段1: 库初始化
+     * 在任何其他操作之前，初始化libelf库
      */
-    if (parse_command_line(argc, argv, &global_config) != 0) {
-        fprintf(stderr, "Error: Failed to parse command line arguments\n");
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "Error: Failed to initialize libelf\n");
         return 1;
     }
 
@@ -119,6 +158,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     db_writer_start(db_context);
+
+    // 阶段3.5: HTTP服务初始化
+    http_context = http_server_start(global_config.http_port, db_context);
+    if (!http_context) {
+        fprintf(stderr, "Error: Failed to start HTTP server\n");
+        db_writer_stop(db_context);
+        db_writer_wait(db_context);
+        return 1;
+    }
 
     /**
      * 阶段4：perf事件初始化
@@ -179,11 +227,20 @@ int main(int argc, char* argv[]) {
      * - 关闭所有perf事件文件描述符
      * - 释放配置内存
      */
+    http_server_stop(http_context);
     cleanup_system(&system_info);
     perf_event_cleanup_manager(manager);
     if (db_context) {
         db_writer_stop(db_context);
         db_writer_wait(db_context);
+    }
+
+    if (log_file) {
+        fclose(log_file);
+    }
+
+    if (global_config.log_output_dir) {
+        free(global_config.log_output_dir);
     }
 
     return 0;
