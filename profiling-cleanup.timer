@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Profiling Data Cleanup Timer
+Requires=profiling-cleanup.service
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

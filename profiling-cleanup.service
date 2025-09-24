@@ -1,0 +1,10 @@
+[Unit]
+Description=Profiling Data Cleanup Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/vivy/Profiling/auto_manager.sh manual-cleanup --dir tmp --days 7
+User=root
+StandardOutput=journal
+StandardError=journal
