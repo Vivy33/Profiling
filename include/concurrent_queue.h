@@ -59,6 +59,18 @@ void queue_push(concurrent_queue_t* queue, void* item);
 void* queue_pop(concurrent_queue_t* queue);
 
 /**
+ * @brief 从队列中批量弹出一组元素（消费者）。
+ *
+ * 如果队列为空，此函数会阻塞，直到队列中有元素可用或队列被关闭。
+ *
+ * @param queue 队列的指针。
+ * @param items 用于存储弹出元素的数组。
+ * @param max_items 要弹出的最大元素数量。
+ * @return 实际弹出的元素数量。如果队列被关闭且为空，则返回 0。
+ */
+int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items);
+
+/**
  * @brief 向队列发送关闭信号。
  *
  * 通知所有正在等待的生产者和消费者线程，队列即将关闭。
