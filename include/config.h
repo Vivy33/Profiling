@@ -19,6 +19,8 @@ struct profiling_config {
     int max_stack_depth;                // 最大栈回溯深度
     bool use_lbr;                       // 是否启用LBR
     char* db_output_dir;                // SQLite数据库输出目录
+    int http_port;                      // HTTP服务器监听端口
+    char* log_output_dir;               // 日志输出目录
 };
 
 // 函数声明
@@ -30,6 +32,9 @@ int validate_config(struct profiling_config* config);
 #define DEFAULT_SAMPLING_FREQUENCY 30    // 30Hz
 #define DEFAULT_CLEANUP_INTERVAL 30      // 30秒
 #define DEFAULT_MAX_STACK_DEPTH 48       // 默认栈深度
+#define DEFAULT_HTTP_PORT 8081           // 默认HTTP服务器端口
+#define DEFAULT_LOG_DIR "/log"           // 默认日志输出目录
+#define DEFAULT_DB_DIR "/tmp"            // 默认数据库输出目录
 #define MAX_TARGETS 32                   // 最大目标进程数
 
 #endif // CONFIG_H
