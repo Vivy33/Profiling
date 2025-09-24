@@ -38,7 +38,9 @@ void print_usage(const char* program_name) {
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
-    printf("  --output-dir=PATH  Required: Directory for SQLite database storage\n");
+    printf("  --output-dir=PATH  Directory for SQLite database storage (default: /tmp)\n");
+    printf("  --port=NUM         HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
+    printf("  --log-dir=PATH     Directory for program logs (default: /log)\n");
     printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
     printf("  --help             Show this help message\n");
 }
@@ -57,10 +59,13 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->cleanup_interval = DEFAULT_CLEANUP_INTERVAL;
     config->max_stack_depth = DEFAULT_MAX_STACK_DEPTH;
     config->use_lbr = false;
-    config->db_output_dir = NULL;
+    config->db_output_dir = DEFAULT_DB_DIR;
+    config->http_port = DEFAULT_HTTP_PORT; // 设置默认HTTP端口
+    config->log_output_dir = DEFAULT_LOG_DIR;
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
+            fprintf(stderr, "DEBUG: Received frequency argument: %s\n", argv[i] + 12);
             config->sampling_frequency = atoi(argv[i] + 12);
             if (config->sampling_frequency <= 0) {
                 fprintf(stderr, "Error: Invalid sampling frequency\n");
@@ -92,6 +97,18 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             }
         } else if (strncmp(argv[i], "--output-dir=", 13) == 0) {
             config->db_output_dir = argv[i] + 13;
+        } else if (strncmp(argv[i], "--port=", 7) == 0) {
+            config->http_port = atoi(argv[i] + 7);
+            if (config->http_port <= 0 || config->http_port > 65535) {
+                fprintf(stderr, "Error: Invalid HTTP port\n");
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--log-dir=", 10) == 0) {
+            config->log_output_dir = strdup(argv[i] + 10);
+            if (!config->log_output_dir) {
+                fprintf(stderr, "Error: Failed to allocate memory for log_output_dir\n");
+                return -1;
+            }
         } else if (strcmp(argv[i], "--lbr") == 0) {
             config->use_lbr = true;
         } else if (strcmp(argv[i], "--help") == 0) {
@@ -132,5 +149,10 @@ int validate_config(struct profiling_config* config) {
         return -1;
     }
     
+    if (config->http_port <= 0 || config->http_port > 65535) {
+        fprintf(stderr, "Error: Invalid HTTP port: %d\n", config->http_port);
+        return -1;
+    }
+
     return 0;
 }
