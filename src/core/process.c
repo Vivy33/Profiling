@@ -179,8 +179,31 @@ struct process_info* find_new_process(struct process_hash_table* process_table, 
 
     // 回退逻辑，确保进程名和命令行不为NULL
     if (!new_node->process_data.process_name) {
-        new_node->process_data.process_name = strdup("<unknown>");
+        // 尝试从cmdline获取进程名
+        if (new_node->process_data.command_line && new_node->process_data.command_line[0] != '\0') {
+            char* space = strchr(new_node->process_data.command_line, ' ');
+            if (space) *space = '\0';
+            char* basename = strrchr(new_node->process_data.command_line, '/');
+            new_node->process_data.process_name = strdup(basename ? basename + 1 : new_node->process_data.command_line);
+            if (space) *space = ' ';
+        } else {
+            new_node->process_data.process_name = strdup("unknown");
+        }
+    } else {
+        // 清理进程名称中的换行符
+        char* newline = strchr(new_node->process_data.process_name, '\n');
+        if (newline) *newline = '\0';
+
+        // 如果进程名称为空或无效，使用PID作为标识
+        if (strlen(new_node->process_data.process_name) == 0 ||
+            strcmp(new_node->process_data.process_name, "\n") == 0) {
+            char pid_str[32];
+            snprintf(pid_str, sizeof(pid_str), "pid_%d", pid);
+            free(new_node->process_data.process_name);
+            new_node->process_data.process_name = strdup(pid_str);
+        }
     }
+
     if (!new_node->process_data.command_line || new_node->process_data.command_line[0] == '\0') {
         free(new_node->process_data.command_line);
         new_node->process_data.command_line = strdup(new_node->process_data.process_name);
@@ -315,8 +338,6 @@ bool is_process_alive(int pid) {
  * 触发频率：由global_config.cleanup_interval配置（默认5秒）
  */
 void cleanup_dead_processes(struct system_context *sys) {
-    extern struct profiling_config global_config;
-    
     for (int i = 0; i < HASHTABLE_SIZE; i++) {
         struct process_hash_node* node = sys->process_table->nodes[i];
         struct process_hash_node* prev = NULL;
@@ -324,10 +345,6 @@ void cleanup_dead_processes(struct system_context *sys) {
         while (node) {
             // pid复用 概率极低
             if (!is_process_alive(node->process_data.process_id)) {
-                if (global_config.verbose) {
-                    printf("Cleaning up dead process: %d\n", node->process_data.process_id);
-                }
-                
                 // 清理该进程引用的所有ELF文件
                 struct rb_root* vma_root = &node->process_data.memory_map_tree;
                 struct rb_node* rb_node = rb_first(vma_root);
