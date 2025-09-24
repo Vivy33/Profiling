@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -fno-omit-frame-pointer -g -O2 -Wall -I. -I include
-LDFLAGS_READER = -lelf -lsqlite3 -lpthread
-LDFLAGS_QUERY = -lsqlite3
+LDFLAGS_READER = -lelf -lsqlite3 -lpthread -lmicrohttpd -lcjson
+LDFLAGS_QUERY = -lsqlite3 -lcurl -lcjson
 
 # VPATH tells make where to look for source files
 VPATH = src/core:src/elf:src/utils:src/perf:config
@@ -22,7 +22,8 @@ READER_SRCS = main.c \
               src/perf/perf.c \
               config/config.c \
               src/utils/concurrent_queue.c \
-              src/utils/database.c
+              src/utils/database.c \
+              src/utils/http_server.c
 
 # Create object file names by taking just the basename and adding .o
 READER_OBJS = $(notdir $(READER_SRCS:.c=.o))
