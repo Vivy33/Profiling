@@ -122,6 +122,43 @@ void* queue_pop(concurrent_queue_t* queue) {
 }
 
 /**
+ * @brief 从队列中批量弹出一组元素（消费者）。
+ */
+int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items) {
+    pthread_mutex_lock(&queue->mutex);
+
+    // 当队列为空且未关闭时，等待
+    while (queue->size == 0 && !queue->shutdown) {
+        pthread_cond_wait(&queue->cond_empty, &queue->mutex);
+    }
+
+    // 如果队列已关闭且为空，则返回 0，表示结束
+    if (queue->shutdown && queue->size == 0) {
+        pthread_mutex_unlock(&queue->mutex);
+        return 0;
+    }
+
+    int actual_pop_count = 0;
+    // 实际要弹出的数量是 max_items 和当前队列大小的最小值
+    int count_to_pop = (queue->size < max_items) ? queue->size : max_items;
+
+    for (int i = 0; i < count_to_pop; ++i) {
+        items[i] = queue->buffer[queue->head];
+        queue->head = (queue->head + 1) % queue->capacity;
+        queue->size--;
+        actual_pop_count++;
+    }
+
+    // 通知可能正在等待的生产者
+    if (actual_pop_count > 0) {
+        pthread_cond_signal(&queue->cond_full);
+    }
+    pthread_mutex_unlock(&queue->mutex);
+
+    return actual_pop_count;
+}
+
+/**
  * @brief 向队列发送关闭信号。
  */
 void queue_signal_shutdown(concurrent_queue_t* queue) {
