@@ -26,7 +26,7 @@ sudo apt-get install build-essential libelf-dev libsqlite3-dev
 - `libelf-dev`: ELF文件解析所需的核心库。
 - `libsqlite3-dev`: 用于（可选的）数据存储功能。
 
-## 快速开始
+## Quick start
 
 ### 1. 克隆项目
 ```bash
@@ -35,17 +35,86 @@ cd <Profiling>
 ```
 
 ### 2. 编译
-直接运行 `make` 命令即可编译生成可执行文件 `profiling_tool`。
+直接运行 `make` 命令即可编译生成可执行文件。
 ```bash
 make
+```
+安装历史数据库(7天)定时清理任务
+```bash
+sudo ./auto_manager.sh install
 ```
 
 ### 3. 运行
 
 **重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用。
 ```bash
-更多参数请查看 `./start_profiling.sh --help`
-查询参数查看   `./smart_query.sh --help`
+
+## 自动化管理与查询
+
+### 自动化管理脚本 (`auto_manager.sh`)
+
+`auto_manager.sh` 是一个统一的性能分析管理脚本，简化了性能分析工具的启动、停止、状态查询和数据清理等操作。
+
+**核心命令:**
+
+- `start`: 启动性能分析（带自动清理）。
+  - 选项: `--dir <PATH>`, `--frequency <HZ>`, `--filter <TYPE>`, `--cleanup <SEC>`, `--stack-depth <NUM>`, `--lbr`
+- `stop`: 停止性能分析及后台清理守护进程。
+- `status`: 查看性能分析工具、后台清理守护进程和 systemd 定时任务的状态。
+- `cleanup`: 手动清理旧数据。
+  - 选项: `--days <NUM>`, `--dry-run`
+- `install`: 安装 systemd 定时任务，用于定期清理旧数据。
+- `uninstall`: 卸载 systemd 定时任务。
+- `logs`: 查看 `profiling_tool` 的实时日志。
+
+**示例:**
+
+```bash
+# 默认启动性能分析（30Hz采样，所有空间，自动清理）
+sudo ./auto_manager.sh start
+
+# 以100Hz频率启动，只分析用户态，启用LBR
+sudo ./auto_manager.sh start --frequency 100 --filter user --lbr
+
+# 查看当前系统状态
+./auto_manager.sh status
+
+# 手动清理超过3天的旧数据（只显示不删除）
+./auto_manager.sh cleanup --days 3 --dry-run
+
+# 安装systemd定时任务，实现自动定期清理
+sudo ./auto_manager.sh install
+```
+
+### 查询脚本 (`smart_query.sh`)
+
+`smart_query.sh` 提供了一个人性化的接口来查询 `profiling_tool` 收集到的性能数据。它支持灵活的时间范围选择和多种过滤条件。
+
+**选项:**
+
+- `--dir <目录>`: 指定数据库目录 (默认: `./tmp`)。
+- `--time <时间段>`: 人性化时间格式，支持多种表达方式。
+  - 示例: `"15:10-15:30"`, `"2023-09-22 15:10-15:30"`, `"today 15:10"`, `"last 20 minutes"`, `"09:00-"`, `"-15:30"`
+- `--pid <pid>`: 按进程ID过滤。
+- `--name <名称>`: 按进程名过滤。
+- `--flame`: 输出火焰图兼容格式（调用链 计数）。
+- `--detailed`: 输出详细的调用栈信息。
+
+**示例:**
+
+```bash
+# 查询今天15:10到15:30的性能数据
+./smart_query.sh --time "15:10-15:30"
+
+# 查询最近30分钟内，进程ID为1234的性能数据
+./smart_query.sh --time "last 30 minutes" --pid 1234
+
+# 查询最近5分钟内，进程名为nginx的性能数据，并输出火焰图兼容格式
+./smart_query.sh --time "last 5 minutes" --name nginx --flame > flame_data.txt
+
+# 查询最近10分钟内，输出详细调用栈信息
+./smart_query.sh --time "last 10 minutes" --detailed
+```
 ```
 
 **场景1: 标准性能分析 (默认软件采样)**
