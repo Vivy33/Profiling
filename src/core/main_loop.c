@@ -23,7 +23,7 @@ static void dispatch_sample_event(struct perf_event_header *header, void *contex
 
         // 将缓冲区和其大小传递给解析函数，以安全地复制数据
         parse_sample_data(header, &result, 128);
-        symbolize_sample(sys_info, &result);
+        symbolize_sample(sys_info, &result, sys_info->db_context, result.timestamp_ns);
     }
 }
 
@@ -53,7 +53,7 @@ void main_loop(struct system_context* system_info, struct perf_event_manager* ma
 // gettimeofday(&end_time, NULL);
 /*
 观察cpu利用率，核心多可能出现永远空转
-if (global_config.verbose && total_events_processed > 0) {
+if (total_events_processed > 0) {
     long seconds = end_time.tv_sec - start_time.tv_sec;
     long micros = ((seconds * 1000000) + end_time.tv_usec) - (start_time.tv_usec);
     printf("Processed %d events in %ld microseconds\n", total_events_processed, micros);
