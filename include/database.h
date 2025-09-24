@@ -2,24 +2,12 @@
 #define DATABASE_H
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 
-/**
- * @file database.h
- * @brief 数据库写入模块的公共接口。
- *
- * 定义了与数据库写入功能相关的结构体和函数。
- * 该模块使用一个不透明的结构体来隐藏实现细节，
- * 并提供初始化、启动/停止写入线程以及推送数据等功能。
- */
+// 前向声明 sqlite3 结构体，避免在头文件中引入整个 sqlite3.h
+struct sqlite3;
 
-/**
- * @brief 数据库写入器的上下文结构体（不透明）。
- *
- * 这是一个不透明结构体，用于封装数据库写入操作所需的所有状态，
- * 包括数据库连接、并发队列、线程ID等。
- * 详细定义见 database.c 文件。
- */
 typedef struct db_writer_context_t db_writer_context_t;
 
 /**
@@ -73,5 +61,8 @@ void db_writer_wait(db_writer_context_t *context);
  * @param stack_str 要写入数据库的、格式化后的调用栈字符串。
  */
 void db_writer_push_stack(db_writer_context_t *context, uint64_t timestamp_ns, const char *stack_str);
+
+// 新增函数：获取数据库句柄，供HTTP服务器查询使用
+struct sqlite3* db_writer_get_db_handle(db_writer_context_t *context);
 
 #endif // DATABASE_H
