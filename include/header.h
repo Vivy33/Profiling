@@ -109,8 +109,8 @@ struct system_context {
     struct elf_file_cache* elf_cache;          // ELF文件缓存
     struct rb_root *kernel_symbols;            // 内核符号红黑树
     struct db_writer_context_t *db_context;    // 数据库写入器上下文
-    uint64_t monotonic_start_ns;               // CLOCK_MONOTONIC 初始时间戳 (纳秒)
-    uint64_t realtime_start_ns;                // CLOCK_REALTIME 初始时间戳 (纳秒)
+    uint64_t monotonic_start_ns;               // 系统启动时的单调时间 (纳秒)
+    uint64_t realtime_start_ns;                // 系统启动时的实时时间 (纳秒)
 };
 
 // 调用栈解析结果
@@ -150,7 +150,7 @@ void remove_process(struct system_context *sys, int pid);
 
 // handler.c
 void parse_sample_data(struct perf_event_header *header, struct callchain_result *result, uint64_t max_ips);
-void symbolize_sample(struct system_context *sys, struct callchain_result *callchain);
+void symbolize_sample(struct system_context *sys, struct callchain_result *callchain, struct db_writer_context_t *db_context, uint64_t timestamp_ns);
 
 // symbol_table.c
 struct symbol_info* rb_search_symbol(struct rb_root *root, uint64_t addr);
