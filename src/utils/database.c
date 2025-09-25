@@ -349,10 +349,12 @@ static void *db_writer_thread_func(void *arg) {
                 const char *full_stack = strtok_r(NULL, "", &saveptr);
                 if (!full_stack) full_stack = "";
 
-                // 绑定参数到 SQL 语句
+                // 绑定参数到 SQL 语句（注意内存管理策略）：
+                // - TEXT 参数统一使用 SQLITE_TRANSIENT，SQLite 会复制传入字符串，避免悬空指针。
+                // - 之前使用 SQLITE_STATIC 在异步写入线程场景下可能造成悬空引用。
                 sqlite3_bind_int64(stmt, 1, entry->timestamp_ns);
                 sqlite3_bind_int(stmt, 2, pid);
-                sqlite3_bind_text(stmt, 3, process_name, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 3, process_name, -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(stmt, 4, full_stack, -1, SQLITE_TRANSIENT);
 
                 // 执行 SQL 插入步骤
