@@ -4,8 +4,18 @@
 #include <string.h>
 #include <sqlite3.h>
 #include <cjson/cJSON.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include "../include/http_server.h"
 #include "../include/database.h" // 包含 db_writer_get_db_handle
+
+// 说明：为了解决缺少网络相关符号（sockaddr_in/htons/htonl/INADDR_LOOPBACK）导致的编译错误，
+// 我们显式引入 sys/socket.h、netinet/in.h、arpa/inet.h 头文件；
+// 另外引入 time.h 以便在默认结束时间中使用 time(NULL)。这样可以保证在仅绑定到本地回环地址时，
+// 相关网络 API 都能正确解析和编译。
 
 /**
  * @file http_server.c
@@ -152,9 +162,18 @@ http_server_context_t* http_server_start(int port, db_writer_context_t *db_conte
     }
 
     context->db_context = db_context;
-    // 启动 MHD 守护进程
+    // 仅绑定到本地回环地址，提升安全性：通过设置 MHD_OPTION_SOCK_ADDR 为 127.0.0.1，
+    // 避免服务对外网暴露，默认只允许本机访问。若未来需要外部访问，可添加配置开关以切换绑定地址。
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
     context->daemon = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, port, NULL, NULL,
-                                       &request_handler, context, MHD_OPTION_END);
+                                       &request_handler, context,
+                                       MHD_OPTION_SOCK_ADDR, &addr,
+                                       MHD_OPTION_END);
 
     if (NULL == context->daemon) {
         fprintf(stderr, "Error: Failed to start HTTP server on port %d\n", port);
@@ -162,7 +181,7 @@ http_server_context_t* http_server_start(int port, db_writer_context_t *db_conte
         return NULL;
     }
 
-    printf("HTTP server started on port %d\n", port);
+    printf("HTTP server started on port %d (loopback only)\n", port);
     return context;
 }
 
