@@ -14,17 +14,25 @@
 
 ## 依赖安装
 
-在编译前，请确保已安装以下必要的开发库。
+在编译前，请确保已安装以下必要的开发库和符号包。
 
 以Debian/Ubuntu为例：
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential libelf-dev libsqlite3-dev
+sudo apt-get install build-essential libelf-dev libsqlite3-dev libmicrohttpd-dev libcjson-dev libcurl4-openssl-dev
 ```
 
 - `build-essential`: 提供 `gcc` 和 `make` 等基础编译工具。
 - `libelf-dev`: ELF文件解析所需的核心库。
-- `libsqlite3-dev`: 用于（可选的）数据存储功能。
+- `libsqlite3-dev`: 用于数据存储功能（SQLite）。
+- `libmicrohttpd-dev`: 轻量级 HTTP 服务器库，用于内置管理/查询接口。
+- `libcjson-dev`: 用于解析/构造 JSON 数据（配置、接口输出等）。
+- `libcurl4-openssl-dev`: 查询工具 `query_tool` 的 HTTP 访问能力（下载/接口调用等）。
+
+可选（符号包/调试符号）：
+- 为了获得更完整的用户态/系统库符号，建议安装系统调试符号包（例如 libc 的 dbgsym/dbg、libstdc++ 的 dbgsym/dbg 等）。
+- 未安装符号包时，程序仍可工作。
+- 内核符号默认来自 `/proc/kallsyms`，通常无需额外安装。
 
 ## Quick start
 
@@ -47,7 +55,39 @@ sudo ./auto_manager.sh install
 ### 3. 运行
 
 **重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用。
+
+**场景1: 标准性能分析 (默认软件采样)**
+此模式适用于快速定位消耗CPU时间最长的“热点”函数。
 ```bash
+# 以100Hz的频率监控所有进程（默认30hz）
+sudo ./auto_manager.sh start --frequency=100
+```
+
+**场景2: 高精度调用栈分析 (LBR硬件采样)**
+此模式使用CPU的LBR硬件功能，以极高的精度追踪函数调用路径，是生成可靠火焰图的首选。
+```bash
+# 启用LBR模式进行高精度分析
+sudo ./auto_manager.sh start --frequency=100 --lbr
+```
+
+**场景3: 只分析内核空间**
+```bash
+# 仅对内核函数进行采样
+sudo ./auto_manager.sh start --frequency=100 --filter=kernel
+```
+
+**场景4: 火焰图生成**
+LBR模式是生成高质量火焰图的首选。为了生成火焰图，`profiling_tool`的输出需要被处理成`flamegraph.pl`脚本所要求的折叠堆栈格式（folded stack format），即每一行都是一个完整的调用栈，以分号分隔，最后是一个空格和样本数。
+```bash
+# 1. 使用分析器采集数据
+# 注意：为了生成火焰图，您需要修改分析器使其输出折叠堆栈格式。
+sudo ./smart_query.sh --time "last 10 minutes" --flame > folded_stacks.txt
+”last“  通过http服务查询内存数据
+其他格式 走sqlite数据库查询已经落盘的数据
+
+# 2. 使用 flamegraph.pl 生成 SVG 火焰图
+./flamegraph.pl folded_stacks.txt > profile.svg
+```
 
 ## 自动化管理与查询
 
@@ -114,25 +154,4 @@ sudo ./auto_manager.sh install
 
 # 查询最近10分钟内，输出详细调用栈信息
 ./smart_query.sh --time "last 10 minutes" --detailed
-```
-```
-
-**场景1: 标准性能分析 (默认软件采样)**
-此模式适用于快速定位消耗CPU时间最长的“热点”函数。
-```bash
-# 以100Hz的频率监控所有进程（默认30hz）
-sudo ./profiling_tool --frequency=100
-```
-
-**场景2: 高精度调用栈分析 (LBR硬件采样)**
-此模式使用CPU的LBR硬件功能，以极高的精度追踪函数调用路径，是生成可靠火焰图的首选。
-```bash
-# 启用LBR模式进行高精度分析
-sudo ./profiling_tool --frequency=100 --lbr
-```
-
-**场景3: 只分析内核空间**
-```bash
-# 仅对内核函数进行采样
-sudo ./profiling_tool --frequency=100 --filter=kernel
 ```
