@@ -193,6 +193,9 @@ static void cleanup_events(struct perf_event_manager* manager, int last_event) {
  * 4. 返回管理器给用户
  */
 struct perf_event_manager* perf_event_init_with_config(const struct profiling_config* config) {
+    // 兼容性说明：当请求启用 LBR 模式但硬件或内核不支持时（errno=EINVAL/EOPNOTSUPP/ENOTSUP），
+    // 我们自动回退到非 LBR 模式以保证采样正常进行。通过 goto 重试创建事件，
+    // 避免因不支持的特性导致初始化失败。
     if (!config) {
         fprintf(stderr, "Error: NULL config provided\n");
         return NULL;
@@ -210,12 +213,25 @@ struct perf_event_manager* perf_event_init_with_config(const struct profiling_co
         return NULL;
     }
 
-    struct perf_event_attr pe = build_perf_attr(config);
+    // 支持LBR硬件不兼容的回退机制
+    struct profiling_config tmp_cfg = *config;
+    int lbr_enabled = config->use_lbr ? 1 : 0;
+
+retry_create:
+    tmp_cfg.use_lbr = lbr_enabled;
+    struct perf_event_attr pe = build_perf_attr(&tmp_cfg);
     
     // 系统模式：每个CPU一个事件，监控所有进程
     for (int cpu = 0; cpu < num_cpus; cpu++) {
         int fd = create_perf_event(&pe, cpu, -1);
         if (fd == -1) {
+            // 当请求LBR但硬件/内核不支持时，回退到非LBR模式
+            if (lbr_enabled && (errno == EINVAL || errno == EOPNOTSUPP || errno == ENOTSUP)) {
+                fprintf(stderr, "LBR not supported, falling back to non-LBR mode: %s\n", strerror(errno));
+                cleanup_events(manager, cpu);
+                lbr_enabled = 0;
+                goto retry_create;
+            }
             fprintf(stderr, "Error opening perf event for CPU %d: %s\n",
                     cpu, strerror(errno));
             cleanup_events(manager, cpu);
