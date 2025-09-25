@@ -39,7 +39,7 @@ void print_usage(const char* program_name) {
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
     printf("  --output-dir=PATH  Directory for SQLite database storage (default: /tmp)\n");
-    printf("  --port=NUM         HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
+    printf("  --http-port=NUM    HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
     printf("  --log-dir=PATH     Directory for program logs (default: /log)\n");
     printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
     printf("  --help             Show this help message\n");
@@ -97,8 +97,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             }
         } else if (strncmp(argv[i], "--output-dir=", 13) == 0) {
             config->db_output_dir = argv[i] + 13;
-        } else if (strncmp(argv[i], "--port=", 7) == 0) {
-            config->http_port = atoi(argv[i] + 7);
+        } else if (strncmp(argv[i], "--http-port=", 12) == 0) {
+            config->http_port = atoi(argv[i] + 12);
             if (config->http_port <= 0 || config->http_port > 65535) {
                 fprintf(stderr, "Error: Invalid HTTP port\n");
                 return -1;
