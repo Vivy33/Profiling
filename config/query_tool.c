@@ -226,6 +226,8 @@ static int perform_live_query(long long start_time, long long end_time, int pid,
     curl_easy_setopt(curl, CURLOPT_URL, url_buffer);             // 设置请求 URL
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback); // 设置写入回调函数
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);   // 设置回调函数的用户数据
+    // 强制禁用代理
+    curl_easy_setopt(curl, CURLOPT_PROXY, "");
     res = curl_easy_perform(curl);                               // 执行 HTTP 请求
 
     if (res != CURLE_OK) {
@@ -312,7 +314,7 @@ static int perform_historical_query(const char *db_dir, long long start_time, lo
         // 添加进程名称过滤条件
         if (name) offset += snprintf(where_clauses + offset, sizeof(where_clauses) - offset, " AND process_name = '%s'", name);
         // 构建最终的 SQL 查询语句
-        snprintf(sql, sizeof(sql), "SELECT full_stack, COUNT(*) FROM call_stacks %s GROUP BY full_stack;", where_clauses);
+        snprintf(sql, sizeof(sql), "SELECT pid, process_name, full_stack, COUNT(*) FROM call_stacks %s GROUP BY pid, process_name, full_stack;", where_clauses);
         fprintf(stderr, "DEBUG: SQL Query: %s\n", sql);
 
         sqlite3_stmt *stmt;
@@ -323,9 +325,9 @@ static int perform_historical_query(const char *db_dir, long long start_time, lo
             // 遍历查询结果
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 fprintf(stderr, "DEBUG: Found a row.\n");
-                const unsigned char *stack = sqlite3_column_text(stmt, 0); // 获取调用栈
-                int count = sqlite3_column_int(stmt, 1);                 // 获取计数
-                if (stack) ht_insert(aggregated_results, (const char*)stack, count); // 插入或累加到哈希表
+                const unsigned char *full_stack = sqlite3_column_text(stmt, 2); // 获取完整调用栈
+                int count = sqlite3_column_int(stmt, 3);                 // 获取计数
+                if (full_stack) ht_insert(aggregated_results, (const char*)full_stack, count); // 插入或累加到哈希表
             }
             sqlite3_finalize(stmt); // 释放 SQL 语句句柄
         }
@@ -353,7 +355,7 @@ void print_usage(const char *prog_name) {
     fprintf(stderr, "  --end-time <时间戳>    结束时间 (Unix秒)\n");
     fprintf(stderr, "  --pid <pid>            按进程ID过滤\n");
     fprintf(stderr, "  --name <名称>          按进程名过滤\n");
-    fprintf(stderr, "  --server <url>         (实时模式)服务器地址 (默认: http://localhost:8080)\n");
+    fprintf(stderr, "  --server <url>         (实时模式)服务器地址 (默认: http://localhost:8081)\n");
 }
 
 /**
@@ -371,7 +373,7 @@ int main(int argc, char *argv[]) {
     long long end_time = 0;
     int pid = 0;
     const char *name = NULL;
-    const char *server_url = "http://localhost:8080"; // 默认实时查询服务器地址
+    const char *server_url = "http://localhost:8081"; // 默认实时查询服务器地址
 
     // 解析命令行参数
     for (int i = 1; i < argc; i++) {
