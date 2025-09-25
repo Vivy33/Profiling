@@ -159,6 +159,9 @@ struct process_info* find_process(struct process_hash_table* table, int pid) {
  * - 内存映射解析失败：释放已分配内存
  */
 struct process_info* find_new_process(struct process_hash_table* process_table, int pid) {
+    // 优化说明：首先尝试从哈希表获取已有进程，避免重复解析；
+    // 对短生命周期且已退出的进程，在尝试读取基本信息后快速返回，
+    // 跳过 /proc/[pid]/maps 解析，减少 I/O 和解析开销。
     struct process_info* proc = find_process(process_table, pid);
     if (proc) {
         return proc;  // 进程已存在，直接返回缓存结果
@@ -209,6 +212,14 @@ struct process_info* find_new_process(struct process_hash_table* process_table, 
         new_node->process_data.command_line = strdup(new_node->process_data.process_name);
     }
     
+    // 短生命周期进程优化：若进程已退出则跳过maps解析，避免不必要的开销
+    if (!is_process_alive(pid)) {
+        free(new_node->process_data.process_name);
+        free(new_node->process_data.command_line);
+        free(new_node);
+        return NULL;
+    }
+
     new_node->process_data.memory_map_tree = RB_ROOT;  // 初始化红黑树根节点
 
     // 解析进程内存映射，填充VMA树
@@ -233,6 +244,9 @@ struct process_info* find_new_process(struct process_hash_table* process_table, 
  * 用于处理PID复用时，主动废弃过时的缓存条目。
  */
 void remove_process(struct system_context *sys, int pid) {
+    // 资源释放说明：ELF 文件的引用释放统一在 free_vma_tree 中进行，
+    // 避免在此处重复释放导致的 double-free。此函数仅负责解除哈希链表链接
+    // 并释放与进程元数据相关的字符串和节点内存。
     unsigned int index = hash_pid(pid);
     struct process_hash_node* node = sys->process_table->nodes[index];
     struct process_hash_node* prev = NULL;
@@ -246,20 +260,17 @@ void remove_process(struct system_context *sys, int pid) {
                 sys->process_table->nodes[index] = node->next_node;
             }
 
-            // 释放资源
-            struct rb_root* vma_root = &node->process_data.memory_map_tree;
-            struct rb_node* rb_node = rb_first(vma_root);
-            while (rb_node) {
-                struct virtual_memory_area* vma = rb_entry(rb_node, struct virtual_memory_area, vm_rb_node);
-                if (vma->elf_file) {
-                    release_elf_by_ptr(sys->elf_cache, vma->elf_file);
-                }
-                rb_node = rb_next(rb_node);
-            }
-            free(node->process_data.process_name);
-            free(node->process_data.command_line);
-            free(node->process_data.executable_path);
+            // 释放资源（ELF 引用统一由 free_vma_tree 处理，避免重复释放）
+            // 修复 use-after-free：free_vma_tree 在释放 VMA 期间可能会读取/使用进程的元信息，
+            // 因此必须先释放 VMA，再释放字符串等元数据，避免释放后仍被访问。
             free_vma_tree(&node->process_data.memory_map_tree);
+
+            free(node->process_data.process_name);
+            node->process_data.process_name = NULL;
+            free(node->process_data.command_line);
+            node->process_data.command_line = NULL;
+            free(node->process_data.executable_path);
+            node->process_data.executable_path = NULL;
             free(node);
             return;
         }
@@ -345,17 +356,6 @@ void cleanup_dead_processes(struct system_context *sys) {
         while (node) {
             // pid复用 概率极低
             if (!is_process_alive(node->process_data.process_id)) {
-                // 清理该进程引用的所有ELF文件
-                struct rb_root* vma_root = &node->process_data.memory_map_tree;
-                struct rb_node* rb_node = rb_first(vma_root);
-                while (rb_node) {
-                    struct virtual_memory_area* vma = rb_entry(rb_node, struct virtual_memory_area, vm_rb_node);
-                    if (vma->elf_file) {
-                        release_elf_by_ptr(sys->elf_cache, vma->elf_file);
-                    }
-                    rb_node = rb_next(rb_node);
-                }
-
                 // 从哈希链表中移除节点
                 struct process_hash_node* temp = node;
                 if (prev) {
@@ -366,11 +366,16 @@ void cleanup_dead_processes(struct system_context *sys) {
                     node = sys->process_table->nodes[i];
                 }
 
-                // 释放进程相关内存
-                free(temp->process_data.process_name);
-                free(temp->process_data.command_line);
-                free(temp->process_data.executable_path);
+                // 释放进程相关内存（ELF 引用由 free_vma_tree 统一处理）
+                // 修复 use-after-free：先释放 VMA 树，再释放进程元数据字符串。
                 free_vma_tree(&temp->process_data.memory_map_tree);  // 释放VMA红黑树
+                
+                free(temp->process_data.process_name);
+                temp->process_data.process_name = NULL;
+                free(temp->process_data.command_line);
+                temp->process_data.command_line = NULL;
+                free(temp->process_data.executable_path);
+                temp->process_data.executable_path = NULL;
                 free(temp);
             } else {
                 prev = node;
@@ -404,13 +409,16 @@ void free_process_hash_table(struct process_hash_table *hash_table) {
             struct process_hash_node* temp = node;
             node = node->next_node;
             
+            // 释放VMA红黑树（可能持有 ELF 引用，需优先释放）
+            free_vma_tree(&temp->process_data.memory_map_tree);
+            
             // 释放进程相关的所有字符串内存
             free(temp->process_data.process_name);
+            temp->process_data.process_name = NULL;
             free(temp->process_data.command_line);
+            temp->process_data.command_line = NULL;
             free(temp->process_data.executable_path);
-            
-            // 释放VMA红黑树
-            free_vma_tree(&temp->process_data.memory_map_tree);
+            temp->process_data.executable_path = NULL;
             
             free(temp);
         }
