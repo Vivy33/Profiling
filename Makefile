@@ -3,6 +3,15 @@ CFLAGS = -fno-omit-frame-pointer -g -O2 -Wall -I. -I include
 LDFLAGS_READER = -lelf -lsqlite3 -lpthread -lmicrohttpd -lcjson
 LDFLAGS_QUERY = -lsqlite3 -lcurl -lcjson
 
+# Enable AddressSanitizer/UndefinedSanitizer when SANITIZE=1
+ifeq ($(SANITIZE),1)
+CFLAGS := -fno-omit-frame-pointer -g -O1 -Wall -I. -I include -fsanitize=address -fsanitize=undefined
+LDFLAGS_READER += -fsanitize=address -fsanitize=undefined
+LDFLAGS_QUERY += -fsanitize=address -fsanitize=undefined
+# Helpful ASAN options; can be adjusted per need
+export ASAN_OPTIONS := detect_leaks=1:halt_on_error=0:abort_on_error=0:fast_unwind_on_malloc=0
+endif
+
 # VPATH tells make where to look for source files
 VPATH = src/core:src/elf:src/utils:src/perf:config
 
