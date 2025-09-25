@@ -132,7 +132,7 @@ start_profiling() {
     mkdir -p "$DEFAULT_DB_DIR" "$DEFAULT_LOG_DIR"
 
     # 构建命令
-    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth $lbr --port=$DEFAULT_HTTP_PORT --log-dir=$DEFAULT_LOG_DIR"
+    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth $lbr --http-port=$DEFAULT_HTTP_PORT --log-dir=$DEFAULT_LOG_DIR"
 
     printf "${GREEN}启动配置:${NC}\n"
     printf "  %-12s: %s\n" "日志目录" "${DEFAULT_LOG_DIR}"
@@ -148,7 +148,7 @@ start_profiling() {
     start_cleanup_daemon "$cleanup_secs" "$db_dir"
 
     # 启动性能分析工具到后台
-    nohup $cmd > "$DEFAULT_LOG_DIR/profiling_tool.log" 2>&1 &
+    sudo nohup $cmd > "$DEFAULT_LOG_DIR/profiling_tool.log" 2>&1 &
     local profiling_pid=$!
 
     echo $profiling_pid > "$DEFAULT_LOG_DIR/profiling_tool.pid"
@@ -326,9 +326,10 @@ show_status() {
     echo "========================"
 
     # 检查性能分析进程
-    if pgrep -f "profiling_tool" > /dev/null; then
-        echo -e "${GREEN}✓ 性能分析: 运行中${NC}"
-        pgrep -f "profiling_tool" | head -1
+    local profiling_pid
+    profiling_pid=$(pgrep -f "profiling_tool" | head -1 || true)
+    if [[ -n "$profiling_pid" ]]; then
+        echo -e "${GREEN}✓ 性能分析: 运行中 (PID: $profiling_pid)${NC}"
     else
         echo -e "${RED}✗ 性能分析: 未运行${NC}"
     fi
