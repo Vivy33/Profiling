@@ -3,3 +3,5 @@ query_tool
 profiling_tool
 log
 tmp
+folded_stacks.txt
+profile.svg
