@@ -148,9 +148,9 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
     char flame_buffer[16384] = {0};
     int flame_len = 0;
 
-    // 火焰图格式：进程名;函数1;函数2;函数3
-    // 首先添加进程名称
-    flame_len += snprintf(flame_buffer + flame_len, sizeof(flame_buffer) - flame_len, "%s", process_name);
+    // 火焰图格式：进程名[pid];函数1;函数2;函数3
+    // 首先添加进程名称和PID
+    flame_len += snprintf(flame_buffer + flame_len, sizeof(flame_buffer) - flame_len, "%s[%d]", process_name, callchain->pid);
 
     // 对链中的每个地址进行符号化，构建调用链
     for (int i = 0; i < valid_ips_count; i++) {
@@ -180,6 +180,8 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
                 if (proc_info->start_time != current_start_time) {
                     remove_process(sys, proc_info->process_id);
                     proc_info = find_new_process(sys->process_table, callchain->pid);
+                    // 关键修复：在 PID 复用导致进程对象被 remove 后，及时刷新 process_name，避免悬空指针（use-after-free）
+                    process_name = (proc_info && proc_info->process_name) ? proc_info->process_name : "unknown";
                     if (!proc_info) {
                         snprintf(func_name, sizeof(func_name), "[process_recycled]");
                     }
@@ -218,10 +220,10 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
 
         // 添加到调用链
         if (flame_len + strlen(func_name) + 2 < sizeof(flame_buffer)) {
-            if (flame_len > strlen(process_name)) {
-                strcat(flame_buffer, ";");
-            }
+            // 在调用栈中的每个函数名前加上分号
+            strcat(flame_buffer, ";");
             strcat(flame_buffer, func_name);
+            flame_len += strlen(func_name) + 1;
         }
     }
 
@@ -246,32 +248,17 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
         }
     }
 
-    if (valid_ips_count > 0) {
-        // 使用火焰图兼容格式：进程名;函数1;函数2;函数3
-        char flame_final[16384 + 256];
-        snprintf(flame_final, sizeof(flame_final), "%s", flame_buffer);
-
-        // 同时存储显示格式：pid|process_name|display_stack
-        char display_final[16384 + 256];
-        snprintf(display_final, sizeof(display_final), "%d|%s|%s",
-                 callchain->pid, process_name, display_buffer);
-
-        uint64_t realtime_timestamp_ns = callchain->timestamp_ns;
-        if (sys->monotonic_start_ns != 0 && sys->realtime_start_ns != 0) {
-            realtime_timestamp_ns = callchain->timestamp_ns - sys->monotonic_start_ns + sys->realtime_start_ns;
-        }
-
-        // 存储两种格式：火焰图格式用于火焰图工具，显示格式用于查询
-        db_writer_push_stack(db_context, realtime_timestamp_ns, flame_final);
-    } else {
-        // 即使没有有效IP，也记录火焰图格式
-        char basic_flame[512];
-        snprintf(basic_flame, sizeof(basic_flame), "%s", process_name);
-
-        uint64_t realtime_timestamp_ns = callchain->timestamp_ns;
-        if (sys->monotonic_start_ns != 0 && sys->realtime_start_ns != 0) {
-            realtime_timestamp_ns = callchain->timestamp_ns - sys->monotonic_start_ns + sys->realtime_start_ns;
-        }
-        db_writer_push_stack(db_context, realtime_timestamp_ns, basic_flame);
+    // 统一将结果写入数据库
+    uint64_t realtime_timestamp_ns = callchain->timestamp_ns;
+    if (sys->monotonic_start_ns != 0 && sys->realtime_start_ns != 0) {
+        realtime_timestamp_ns = callchain->timestamp_ns - sys->monotonic_start_ns + sys->realtime_start_ns;
     }
+
+    // 准备要写入数据库的字符串，格式为 "pid|process_name|full_stack"
+    // full_stack 的格式为 "process_name[pid];func1;func2..."
+    char db_stack_str[16384 + 256];
+    snprintf(db_stack_str, sizeof(db_stack_str), "%d|%s|%s",
+             callchain->pid, process_name, flame_buffer);
+    
+    db_writer_push_stack(db_context, realtime_timestamp_ns, db_stack_str);
 }
