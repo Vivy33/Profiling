@@ -37,6 +37,7 @@ concurrent_queue_t* queue_init(int capacity);
  * @param queue 要销毁的队列的指针。
  */
 void queue_destroy(concurrent_queue_t* queue);
+int queue_get_size(concurrent_queue_t* queue);
 
 /**
  * @brief 向队列中推送一个元素（生产者）。
@@ -80,14 +81,6 @@ int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items);
  */
 void queue_signal_shutdown(concurrent_queue_t* queue);
 
-/**
- * @brief 获取队列当前的大小。
- *
- * 这是一个非阻塞操作，返回队列中当前元素的数量。
- *
- * @param queue 队列的指针。
- * @return 队列中元素的数量。
- */
-int queue_size(concurrent_queue_t* queue);
+
 
 #endif // CONCURRENT_QUEUE_H
