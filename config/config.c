@@ -62,6 +62,7 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->db_output_dir = DEFAULT_DB_DIR;
     config->http_port = DEFAULT_HTTP_PORT; // 设置默认HTTP端口
     config->log_output_dir = DEFAULT_LOG_DIR;
+    config->histogram_print_threshold = DEFAULT_HISTOGRAM_PRINT_THRESHOLD;
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -111,6 +112,12 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             }
         } else if (strcmp(argv[i], "--lbr") == 0) {
             config->use_lbr = true;
+        } else if (strncmp(argv[i], "--histogram-threshold=", 24) == 0) {
+            config->histogram_print_threshold = atoi(argv[i] + 24);
+            if (config->histogram_print_threshold <= 0) {
+                fprintf(stderr, "Error: Invalid histogram print threshold\n");
+                return -1;
+            }
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             exit(0);
