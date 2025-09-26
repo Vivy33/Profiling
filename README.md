@@ -15,6 +15,57 @@
 - **高可靠栈回溯**: 可选LBR或Frame Pointer模式，用于生成高度精确的调用栈和火焰图。
 - **内存安全**: 通过引用计数和定期清理机制，确保零内存泄漏。
 
+## 🏗️ 架构详解
+
+### 分层架构图
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 应用层 (main.c)                                                               
+│ ├── 配置解析: parse_command_line()                                            
+│ ├── 生命周期: initialize_system() → main_loop() → cleanup()                   
+│ └── 错误处理: 完善的错误恢复和资源清理                                          
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 配置层 (config.c + config.h)                                                  
+│ └── 采样参数与过滤策略: sampling_frequency, use_lbr, filter_mode 等            
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 事件循环层 (main_loop.c)                                                      
+│ ├── mmap环形缓冲区消费: perf_event_consume_ring_buffer()                       
+│ ├── 采样分发: dispatch_sample_event() → symbolize_sample()                    
+│ └── 定期清理: cleanup_dead_processes()                                        
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 采样源 / Perf 层 (perf.c)                                                     
+│ ├── 事件配置: build_perf_attr() [LBR/软件调用栈]                               
+│ ├── sample_type: IP/TID/TIME/CALLCHAIN 或 BRANCH_STACK + REGS_USER           
+│ └── exclude_kernel/idle, mmap环形缓冲区                                       
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 采样与符号化层 (handler.c)                                                     
+│ ├── 地址空间判断与过滤: FILTER_USER / FILTER_KERNEL                            
+│ ├── 内核符号解析: find_kernel_symbol() [kernel]                               
+│ ├── 用户符号解析: find_new_process() → find_vma_from_process()                
+│ │                    → find_or_create_elf() → find_symbol_name_from_elf()    
+│ ├── PID复用检测与降级: [process_recycled] / [unknown_*]                       
+│ └── 构建折叠栈: process_name[pid];func1;func2;… → db_writer_push_stack()      
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 数据持久化层 (database.c + database.h, SQLite)                                
+│ └── 按小时分库写入: db_writer_push_stack()                                    
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 实时服务层 (http_server.c + http_server.h)                                    
+│ └── 实时数据查询/输出                                                          
+├──────────────────────────────────────────────────────────────────────────────┤
+│ 查询与可视化层                                                                
+│ ├── 历史/实时查询: config/query_tool.c                                        
+│ ├── 辅助脚本: smart_query.sh → flamegraph.pl                                  
+│ └── 可视化输出: profile.svg                                                    
+├─────────────────┬────────────────────┬──────────────────────┬──────────────────┤
+│ELF解析层         进程管理             数据结构与工具层         内核符号解析层   
+│ elf.c            process.c           rbtree.c + hash.c      kernel_symbol.c  
+│ ├── ELF解析      ├── 进程创建         ├── 红黑树操作          ├── kallsyms解析 
+│ ├── 符号提取      ├── VMA管理         ├── 哈希表实现          └── 内核符号缓存 
+│ └── ELF缓存       └── 死进程清理      ├── 核心缓存                            
+│                                      └── 速率限制                            
+└─────────────────┴────────────────────┴──────────────────────┴──────────────────┘
+```
+
 ## 依赖安装
 
 在编译前，请确保已安装以下必要的开发库和符号包。
@@ -57,7 +108,7 @@ sudo ./auto_manager.sh install
 
 ### 3. 运行
 
-**重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用。
+**重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用，需要root内核栈才可以解析。
 
 **场景1: 标准性能分析 (默认软件采样)**
 此模式适用于快速定位消耗CPU时间最长的“热点”函数。
@@ -158,3 +209,11 @@ sudo ./auto_manager.sh install
 # 查询最近10分钟内，输出详细调用栈信息
 ./smart_query.sh --time "last 10 minutes" --detailed
 ```
+
+## 📚 相关技术文档
+- [Linux perf_event_open系统调用](https://man7.org/linux/man-pages/man2/perf_event_open.2.html)
+- [ELF文件格式规范](https://refspecs.linuxfoundation.org/elf/elf.pdf)
+- [Linux虚拟内存管理](https://www.kernel.org/doc/html/latest/admin-guide/mm/index.html)
+- [红黑树算法实现](https://www.kernel.org/doc/html/latest/core-api/rbtree.html)
+- [火焰图生成工具](http://www.brendangregg.com/flamegraphs.html)
+- [libelf库文档](https://sourceware.org/elfutils/)
