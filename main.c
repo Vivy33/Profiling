@@ -152,7 +152,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    db_writer_context_t *db_context = db_writer_init(global_config.db_output_dir);
+    db_writer_context_t *db_context = db_writer_init(global_config.db_output_dir, &global_config);
     if (!db_context) {
         fprintf(stderr, "Error: Failed to initialize database writer\n");
         return 1;
