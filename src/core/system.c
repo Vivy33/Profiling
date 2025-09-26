@@ -100,7 +100,14 @@ int initialize_system(struct system_context* system_info) {
  * 4. 释放哈希表本身
  * 
  * 线程安全：应在主线程退出时调用
- * 可重入：支持多次调用，NULL参数安全
+ * free malloc printf这些函数都不是重入安全的
+ * 有锁的函数，都不是重入安全的，因为可能会死锁
+ *      malloc/free {
+            lock
+            dosth   // 这里被重入了 -> 切到signal handler
+            unlock
+        }
+ * signal_handler里面调用了malloc/free又加了这把锁 
  */
 void cleanup_system(struct system_context* system_info) {
     if (!system_info) return; 

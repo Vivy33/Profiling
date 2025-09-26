@@ -36,7 +36,14 @@
  * 3. 释放VMA结构体本身
  * 
  * 线程安全：应在单线程环境中调用
- * 可重入：支持，无全局状态依赖
+ * free malloc printf这些函数都不是重入安全的
+ * 有锁的函数，都不是重入安全的，因为可能会死锁
+ *      malloc/free {
+            lock
+            dosth   // 这里被重入了 -> 切到signal handler
+            unlock
+        }
+ * signal_handler里面调用了malloc/free又加了这把锁
  */
 static void free_vma_nodes(struct rb_node *node) {
     if (node == NULL) {
