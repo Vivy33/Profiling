@@ -8,6 +8,24 @@
 #include <errno.h>
 #include "../../include/database.h"
 #include "../../include/concurrent_queue.h"
+#include "../../include/config.h"
+
+// Latency histogram
+#define NUM_LATENCY_BUCKETS 10
+static long long latency_buckets[NUM_LATENCY_BUCKETS] = {0};
+static long long push_count = 0;
+static const long long bucket_thresholds[NUM_LATENCY_BUCKETS] = {
+    1000,    // < 1 us
+    5000,    // < 5 us
+    10000,   // < 10 us
+    50000,   // < 50 us
+    100000,  // < 100 us
+    500000,  // < 500 us
+    1000000, // < 1 ms
+    5000000, // < 5 ms
+    10000000, // < 10 ms
+    -1       // > 10 ms
+};
 
 /**
  * @file database.c
@@ -20,7 +38,7 @@
  */
 
 #define QUEUE_CAPACITY 1024 /**< 数据库写入队列的容量 */
-#define BATCH_SIZE 20    /**< 每次批量写入数据库的条目数量 */
+#define BATCH_SIZE 40    /**< 每次批量写入数据库的条目数量 */
 
 /**
  * @brief 数据库条目结构体。
@@ -44,6 +62,7 @@ struct db_writer_context_t {
     volatile bool running;          /**< 线程运行标志，控制线程生命周期 */
     struct sqlite3 *db;             /**< 当前打开的 SQLite 数据库句柄 */
     char current_db_path[256];      /**< 当前正在写入的数据库文件的路径 */
+    const profiling_config_t *config; /**< Profiling configuration */
 };
 
 // 静态函数声明
@@ -58,7 +77,7 @@ static void *db_writer_thread_func(void *arg);
  * @param output_dir 数据库文件将存储的目录路径。
  * @return 成功时返回 db_writer_context_t 指针，失败时返回 NULL。
  */
-db_writer_context_t* db_writer_init(const char *output_dir) {
+db_writer_context_t* db_writer_init(const char *output_dir, const profiling_config_t *config) {
     // 检查并创建输出目录
     struct stat st = {0};
     if (stat(output_dir, &st) == -1) {
@@ -90,6 +109,7 @@ db_writer_context_t* db_writer_init(const char *output_dir) {
     context->thread_id = 0;
     context->db = NULL;
     context->current_db_path[0] = '\0';
+    context->config = config;
 
     return context;
 }
@@ -172,9 +192,39 @@ void db_writer_push_stack(db_writer_context_t *context, uint64_t timestamp_ns, c
     // get start time
     entry->timestamp_ns = timestamp_ns;
     // fprintf(stderr, "DEBUG: db_writer_push_stack: Pushing timestamp_ns = %lu\n", timestamp_ns);
-    queue_push(context->queue, entry);
+    
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     // get end time
     // 如果时间过长说明出现了锁等待
+    queue_push(context->queue, entry);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    long long elapsed_ns = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
+    
+    int queue_size = queue_get_size(context->queue);
+    fprintf(stderr, "DEBUG: queue_push latency: %lld ns, queue size: %d\n", elapsed_ns, queue_size);
+
+    for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+        if (bucket_thresholds[i] == -1 || elapsed_ns < bucket_thresholds[i]) {
+            latency_buckets[i]++;
+            break;
+        }
+    }
+
+    push_count++;
+    if (push_count >= context->config->histogram_print_threshold) {
+        fprintf(stderr, "DEBUG: Latency bucket distribution:\n");
+        for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+            if (bucket_thresholds[i] == -1) {
+                fprintf(stderr, "    > %lld ns: %lld\n", bucket_thresholds[i-1], latency_buckets[i]);
+            } else {
+                fprintf(stderr, "    < %lld ns: %lld\n", bucket_thresholds[i], latency_buckets[i]);
+            }
+        }
+        memset(latency_buckets, 0, sizeof(latency_buckets));
+        push_count = 0;
+    }
 }
 
 /**
@@ -262,7 +312,7 @@ static void *db_writer_thread_func(void *arg) {
     fprintf(stderr, "DEBUG: DB writer thread started.\n");
 
     // 线程运行条件：context->running 为 true 或队列中仍有数据
-    while (context->running || queue_size(context->queue) > 0) {
+    while (context->running || queue_get_size(context->queue) > 0) {
         // 尝试从队列中弹出单个元素
         void* item = queue_pop(context->queue);
         if (item) {
