@@ -173,7 +173,8 @@ void queue_signal_shutdown(concurrent_queue_t* queue) {
 /**
  * @brief 获取队列当前的大小。
  */
-int queue_size(concurrent_queue_t* queue) {
+int queue_get_size(concurrent_queue_t* queue) {
+    if (!queue) return 0;
     pthread_mutex_lock(&queue->mutex);
     int size = queue->size;
     pthread_mutex_unlock(&queue->mutex);
