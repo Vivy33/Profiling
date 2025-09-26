@@ -12,6 +12,8 @@ enum filter_mode {
 };
 
 // 性能分析配置
+typedef struct profiling_config profiling_config_t;
+
 struct profiling_config {
     int sampling_frequency;             // 采样频率 (Hz)
     enum filter_mode filter_mode;       // 显示过滤模式
@@ -21,6 +23,7 @@ struct profiling_config {
     char* db_output_dir;                // SQLite数据库输出目录
     int http_port;                      // HTTP服务器监听端口
     char* log_output_dir;               // 日志输出目录
+    int histogram_print_threshold;      // 延迟直方图打印阈值
 };
 
 // 函数声明
@@ -35,6 +38,7 @@ int validate_config(struct profiling_config* config);
 #define DEFAULT_HTTP_PORT 8081           // 默认HTTP服务器端口
 #define DEFAULT_LOG_DIR "/log"           // 默认日志输出目录
 #define DEFAULT_DB_DIR "/tmp"            // 默认数据库输出目录
+#define DEFAULT_HISTOGRAM_PRINT_THRESHOLD 1000 // 默认直方图打印阈值
 #define MAX_TARGETS 32                   // 最大目标进程数
 
 #endif // CONFIG_H
