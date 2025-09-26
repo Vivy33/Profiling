@@ -15,95 +15,6 @@
 - **高可靠栈回溯**: 可选LBR或Frame Pointer模式，用于生成高度精确的调用栈和火焰图。
 - **内存安全**: 通过引用计数和定期清理机制，确保零内存泄漏。
 
-## 🏗️ 架构详解
-
-### 分层架构图
-
-```mermaid
-graph TD
-    subgraph "应用层 (main.c)"
-        A1["配置解析: parse_command_line()"]
-        A2["生命周期: initialize_system() → main_loop() → cleanup()"]
-        A3["错误处理: 完善的错误恢复和资源清理"]
-    end
-
-    subgraph "配置层 (config.c + config.h)"
-        B1["采样参数与过滤策略: sampling_frequency, use_lbr, filter_mode 等"]
-    end
-
-    subgraph "事件循环层 (main_loop.c)"
-        C1["mmap环形缓冲区消费: perf_event_consume_ring_buffer()"]
-        C2["采样分发: dispatch_sample_event() → symbolize_sample()"]
-        C3["定期清理: cleanup_dead_processes()"]
-    end
-
-    subgraph "采样源 / Perf 层 (perf.c)"
-        D1["事件配置: build_perf_attr() [LBR/软件调用栈]"]
-        D2["sample_type: IP/TID/TIME/CALLCHAIN 或 BRANCH_STACK + REGS_USER"]
-        D3["exclude_kernel/idle, mmap环形缓冲区"]
-    end
-
-    subgraph "采样与符号化层 (handler.c)"
-        E1["地址空间判断与过滤: FILTER_USER / FILTER_KERNEL"]
-        E2["内核符号解析: find_kernel_symbol() [kernel]"]
-        E3["用户符号解析: find_new_process() → find_vma_from_process() → find_or_create_elf() → find_symbol_name_from_elf()"]
-        E4["PID复用检测与降级: [process_recycled] / [unknown_*]"]
-        E5["构建折叠栈: process_name[pid];func1;func2;… → db_writer_push_stack()"]
-    end
-
-    subgraph "数据持久化层 (database.c + database.h, SQLite)"
-        F1["按小时分库写入: db_writer_push_stack()"]
-    end
-
-    subgraph "实时服务层 (http_server.c + http_server.h)"
-        G1["实时数据查询/输出"]
-    end
-
-    subgraph "查询与可视化层"
-        H1["历史/实时查询: config/query_tool.c"]
-        H2["辅助脚本: smart_query.sh → flamegraph.pl"]
-        H3["可视化输出: profile.svg"]
-    end
-
-    subgraph "底层模块"
-        subgraph "ELF解析层 (elf.c)"
-            I1["ELF解析"]
-            I2["符号提取"]
-            I3["ELF缓存"]
-        end
-        subgraph "进程管理 (process.c)"
-            J1["进程创建"]
-            J2["VMA管理"]
-            J3["死进程清理"]
-        end
-        subgraph "数据结构与工具层 (rbtree.c + hash.c)"
-            K1["红黑树操作"]
-            K2["哈希表实现"]
-            K3["核心缓存"]
-            K4["速率限制"]
-        end
-        subgraph "内核符号解析层 (kernel_symbol.c)"
-            L1["kallsyms解析"]
-            L2["内核符号缓存"]
-        end
-    end
-
-    A2 --> C1
-    C1 --> C2
-    C2 --> E1
-    E1 --> E2
-    E1 --> E3
-    E3 --> I1
-    E5 --> F1
-    F1 --> G1
-    G1 --> H1
-    H2 --> H3
-```
-
-> 下面是同款架构的可视化图（带数据流箭头），可在浏览器直接查看：
-
-![Architecture Diagram](./architecture.svg)
-
 ## 依赖安装
 
 在编译前，请确保已安装以下必要的开发库和符号包。
@@ -146,7 +57,7 @@ sudo ./auto_manager.sh install
 
 ### 3. 运行
 
-**重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用，需要root内核栈才可以解析。
+**重要提示**: 运行本工具需要 `root` 权限，因为它依赖于 `perf_event_open` 系统调用。
 
 **场景1: 标准性能分析 (默认软件采样)**
 此模式适用于快速定位消耗CPU时间最长的“热点”函数。
@@ -247,11 +158,3 @@ sudo ./auto_manager.sh install
 # 查询最近10分钟内，输出详细调用栈信息
 ./smart_query.sh --time "last 10 minutes" --detailed
 ```
-
-## 📚 相关技术文档
-- [Linux perf_event_open系统调用](https://man7.org/linux/man-pages/man2/perf_event_open.2.html)
-- [ELF文件格式规范](https://refspecs.linuxfoundation.org/elf/elf.pdf)
-- [Linux虚拟内存管理](https://www.kernel.org/doc/html/latest/admin-guide/mm/index.html)
-- [红黑树算法实现](https://www.kernel.org/doc/html/latest/core-api/rbtree.html)
-- [火焰图生成工具](http://www.brendangregg.com/flamegraphs.html)
-- [libelf库文档](https://sourceware.org/elfutils/)
