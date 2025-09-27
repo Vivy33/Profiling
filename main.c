@@ -31,11 +31,11 @@
 #include <libelf.h>
 #include <signal.h>
 
-#include "../include/header.h" 
-#include "../include/config.h"
-#include "../include/perf.h"
-#include "../include/database.h"
-#include "../include/http_server.h"
+#include "include/header.h"
+#include "include/config.h"
+#include "include/perf.h"
+#include "include/database.h"
+#include "include/http_server.h"
 
 #define PATH_MAX 4096
 
@@ -152,7 +152,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    db_writer_context_t *db_context = db_writer_init(global_config.db_output_dir, &global_config);
+    db_writer_context_t *db_context = db_writer_init(&global_config);
     if (!db_context) {
         fprintf(stderr, "Error: Failed to initialize database writer\n");
         return 1;
