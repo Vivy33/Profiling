@@ -21,7 +21,7 @@ typedef struct db_writer_context_t db_writer_context_t;
  * @param db_path 要打开或创建的数据库文件的路径。
  * @return 成功时返回一个指向 db_writer_context_t 的指针，失败时返回 NULL。
  */
-db_writer_context_t* db_writer_init(const profiling_config_t *config);
+db_writer_context_t* db_writer_init(const struct profiling_config *config);
 
 /**
  * @brief 启动数据库后台写入线程。
