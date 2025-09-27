@@ -63,6 +63,7 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->http_port = DEFAULT_HTTP_PORT; // 设置默认HTTP端口
     config->log_output_dir = DEFAULT_LOG_DIR;
     config->histogram_print_threshold = DEFAULT_HISTOGRAM_PRINT_THRESHOLD;
+    config->db_batch_size = 40; // Default batch size
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -116,6 +117,12 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             config->histogram_print_threshold = atoi(argv[i] + 24);
             if (config->histogram_print_threshold <= 0) {
                 fprintf(stderr, "Error: Invalid histogram print threshold\n");
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--db-batch-size=", 16) == 0) {
+            config->db_batch_size = atoi(argv[i] + 16);
+            if (config->db_batch_size <= 0) {
+                fprintf(stderr, "Error: Invalid db batch size\n");
                 return -1;
             }
         } else if (strcmp(argv[i], "--help") == 0) {
