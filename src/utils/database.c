@@ -38,8 +38,6 @@ static const long long bucket_thresholds[NUM_LATENCY_BUCKETS] = {
  */
 
 #define QUEUE_CAPACITY 1024 /**< 数据库写入队列的容量 */
-#define BATCH_SIZE 40    /**< 每次批量写入数据库的条目数量 */
-
 /**
  * @brief 数据库条目结构体。
  *
@@ -77,7 +75,8 @@ static void *db_writer_thread_func(void *arg);
  * @param output_dir 数据库文件将存储的目录路径。
  * @return 成功时返回 db_writer_context_t 指针，失败时返回 NULL。
  */
-db_writer_context_t* db_writer_init(const char *output_dir, const profiling_config_t *config) {
+db_writer_context_t* db_writer_init(const profiling_config_t *config) {
+    const char *output_dir = config->db_output_dir;
     // 检查并创建输出目录
     struct stat st = {0};
     if (stat(output_dir, &st) == -1) {
@@ -307,7 +306,12 @@ static void *db_writer_thread_func(void *arg) {
     db_writer_context_t *context = (db_writer_context_t *)arg;
     sqlite3_stmt *stmt = NULL;
     
-    db_entry_t *batch[BATCH_SIZE]; // 批量存储弹出的数据
+    db_entry_t **batch = malloc(sizeof(db_entry_t*) * context->config->db_batch_size);
+    if (!batch) {
+        fprintf(stderr, "Failed to allocate memory for batch\n");
+        return NULL;
+    }
+
     int count = 0;
     fprintf(stderr, "DEBUG: DB writer thread started.\n");
 
@@ -328,7 +332,7 @@ static void *db_writer_thread_func(void *arg) {
 
         // 无论 item 是否为 NULL，只要有数据在 batch 中，并且满足批处理条件，就尝试处理
         // 批处理条件：达到 BATCH_SIZE 或线程即将停止 (context->running 为 false)
-        if (count > 0 && (count >= BATCH_SIZE || !context->running)) {
+        if (count > 0 && (count >= context->config->db_batch_size || !context->running)) {
             fprintf(stderr, "DEBUG: Processing batch, count: %d\n", count);
             // 检查批次中的第一个元素是否有效，以避免潜在的空指针解引用
             if (batch[0] == NULL) {
