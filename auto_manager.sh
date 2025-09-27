@@ -19,6 +19,7 @@ DEFAULT_LOG_DIR="$SCRIPT_DIR/log"
 DEFAULT_FREQUENCY=30
 DAYS_TO_KEEP=7
 DEFAULT_HTTP_PORT=8081
+DEFAULT_DB_BATCH_SIZE=40
 PROFILING_TOOL="$SCRIPT_DIR/profiling_tool"
 QUERY_TOOL="$SCRIPT_DIR/query_tool"
 
@@ -44,6 +45,7 @@ ${YELLOW}start命令选项:${NC}
   --filter TYPE       过滤类型: user|kernel|all (默认: all)
   --cleanup SEC       清理间隔秒数 (默认: 30)
   --stack-depth NUM   最大栈深度 (默认: 48)
+  --db-batch-size NUM 数据库写入批处理大小 (默认: $DEFAULT_DB_BATCH_SIZE)
   --lbr               启用LBR精确调用栈
 
 ${YELLOW}cleanup命令选项:${NC}
@@ -77,6 +79,7 @@ start_profiling() {
     local filter="all"
     local cleanup_secs="30"
     local stack_depth="48"
+    local db_batch_size="$DEFAULT_DB_BATCH_SIZE"
     local lbr=""
 
     # 解析参数
@@ -100,6 +103,10 @@ start_profiling() {
                 ;;
             --stack-depth)
                 stack_depth="$2"
+                shift 2
+                ;;
+            --db-batch-size)
+                db_batch_size="$2"
                 shift 2
                 ;;
             --lbr)
@@ -132,7 +139,7 @@ start_profiling() {
     mkdir -p "$DEFAULT_DB_DIR" "$DEFAULT_LOG_DIR"
 
     # 构建命令
-    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth $lbr --http-port=$DEFAULT_HTTP_PORT --log-dir=$DEFAULT_LOG_DIR"
+    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth --db-batch-size=$db_batch_size $lbr --http-port=$DEFAULT_HTTP_PORT --log-dir=$DEFAULT_LOG_DIR"
 
     printf "${GREEN}启动配置:${NC}\n"
     printf "  %-12s: %s\n" "日志目录" "${DEFAULT_LOG_DIR}"
@@ -141,6 +148,7 @@ start_profiling() {
     printf "  %-12s: %s\n" "过滤模式" "${filter}"
     printf "  %-12s: %s 秒\n" "清理间隔" "${cleanup_secs}"
     printf "  %-12s: %s 层\n" "最大栈深" "${stack_depth}"
+    printf "  %-12s: %s\n" "批处理大小" "${db_batch_size}"
     [[ -n "$lbr" ]] && printf "  %-12s: 启用\n" "LBR模式"
     printf "\n"
 
