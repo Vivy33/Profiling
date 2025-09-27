@@ -3,7 +3,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <errno.h>
 #include <dirent.h>
 #include <sqlite3.h>
 #include <curl/curl.h>
