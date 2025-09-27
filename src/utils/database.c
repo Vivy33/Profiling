@@ -60,7 +60,7 @@ struct db_writer_context_t {
     volatile bool running;          /**< 线程运行标志，控制线程生命周期 */
     struct sqlite3 *db;             /**< 当前打开的 SQLite 数据库句柄 */
     char current_db_path[256];      /**< 当前正在写入的数据库文件的路径 */
-    const profiling_config_t *config; /**< Profiling configuration */
+    const struct profiling_config *config; /**< Profiling configuration */
 };
 
 // 静态函数声明
@@ -75,7 +75,7 @@ static void *db_writer_thread_func(void *arg);
  * @param output_dir 数据库文件将存储的目录路径。
  * @return 成功时返回 db_writer_context_t 指针，失败时返回 NULL。
  */
-db_writer_context_t* db_writer_init(const profiling_config_t *config) {
+db_writer_context_t* db_writer_init(const struct profiling_config *config) {
     const char *output_dir = config->db_output_dir;
     // 检查并创建输出目录
     struct stat st = {0};
