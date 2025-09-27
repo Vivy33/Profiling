@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include "../../include/concurrent_queue.h"
@@ -175,6 +174,22 @@ void queue_signal_shutdown(concurrent_queue_t* queue) {
  */
 int queue_get_size(concurrent_queue_t* queue) {
     if (!queue) return 0;
+
+    /**
+     * 这里加锁的本意是防止读到的size是个过时或不正确的值
+     * 但加锁也会有可能过时，考虑下面的时序
+     *  size
+     *        push
+     *  pop
+     * push和pop都已经加过锁了，这个时序下，size加锁没有意义
+     * size加锁是对的，但是这个精度没有必要，加锁防止的是正确性问题，同时+1 -1
+     * size是只读的，它不会单独操作，它后面的write一定是加锁自己判断size的
+     * 数据过时，和加锁无关，加锁只是解决了push/pop size
+     * 但是锁解决不了超过锁范围的ordering问题
+     * 从做监控的角度来看，取size延迟了1ms，影响不大
+     * 我们看的是一个整体趋势，不在乎绝对精度，或者说，我们看的是某个时间点附近的数据
+     * 加锁是一定对的，而且目前测试是没有性能瓶颈问题，所以暂时保留这把锁
+     */
     pthread_mutex_lock(&queue->mutex);
     int size = queue->size;
     pthread_mutex_unlock(&queue->mutex);
