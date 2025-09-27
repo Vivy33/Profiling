@@ -24,6 +24,7 @@ struct profiling_config {
     int http_port;                      // HTTP服务器监听端口
     char* log_output_dir;               // 日志输出目录
     int histogram_print_threshold;      // 延迟直方图打印阈值
+    int db_batch_size;                  // 数据库写入的批处理大小
 };
 
 // 函数声明
