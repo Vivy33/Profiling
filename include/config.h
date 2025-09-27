@@ -12,7 +12,7 @@ enum filter_mode {
 };
 
 // 性能分析配置
-typedef struct profiling_config profiling_config_t;
+
 
 struct profiling_config {
     int sampling_frequency;             // 采样频率 (Hz)
