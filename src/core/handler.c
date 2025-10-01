@@ -24,9 +24,15 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "../include/header.h"
+#include "../../include/header.h"
 #include "../../include/config.h"
 #include "../../include/database.h"
+#include "../../include/concurrent_queue.h"
+#include "../../include/mempool.h"
+
+// 声明一个外部的内存池指针，该内存池在 main_loop.c 中被创建和管理。
+// extern让符号化线程能够访问并归还内存块。
+extern struct mempool_s *sample_pool;
 
 // PERF_CONTEXT_MAX 是有效IP地址的上限。
 // 超过此值的地址是上下文标记。此值来自内核UAPI
@@ -110,6 +116,50 @@ void parse_sample_data(struct perf_event_header *header, struct callchain_result
             memcpy(result->ips, ptr, count_to_copy * sizeof(uint64_t));
         }
     }
+}
+
+/**
+ * @brief 符号化工作线程函数
+ *
+ * 该函数是符号化处理的消费者。它在一个无限循环中运行，持续地从并发队列
+ * `symbolizer_queue` 中拉取（pop）原始采样数据（`raw_sample`）。
+ *
+ * 主要工作流程：
+ * 1. 从队列中阻塞等待一个新的 `raw_sample`。
+ * 2. 如果收到的样本为NULL，则视其为终止信号，线程退出循环。
+ * 3. 将 `raw_sample` 的数据复制到一个临时的 `callchain_result` 结构中。
+ * 4. 调用 `symbolize_sample` 函数，执行核心的符号化逻辑。
+ * 5. 符号化完成后，调用 `mempool_free` 将 `raw_sample` 对象归还到内存池，
+ *    以供复用，避免了频繁的内存分配和释放。
+ *
+ * @param arg 指向 `system_context` 结构体的指针，包含了队列等共享资源。
+ * @return NULL
+ */
+void* symbolizer_thread_func(void* arg) {
+    struct system_context* sys = (struct system_context*)arg;
+    concurrent_queue_t* q = sys->symbolizer_queue;
+
+    while (true) {
+        struct raw_sample* sample = queue_pop(q);
+        if (sample == NULL) {
+            break; 
+        }
+
+        struct callchain_result result;
+        result.timestamp_ns = sample->timestamp_ns;
+        result.pid = sample->pid;
+        result.tid = sample->tid;
+        result.ip = sample->ip;
+        result.nr = sample->nr;
+        result.ips = sample->ips;
+
+        symbolize_sample(sys, &result, sys->db_context, sample->timestamp_ns);
+
+        // 样本处理完毕后，将其归还给内存池，以便后续的采样可以复用这块内存。
+        mempool_free(sample_pool, sample);
+    }
+
+    return NULL;
 }
 
 /**
