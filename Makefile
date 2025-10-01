@@ -32,7 +32,8 @@ READER_SRCS = main.c \
               config/config.c \
               src/utils/concurrent_queue.c \
               src/utils/database.c \
-              src/utils/http_server.c
+              src/utils/http_server.c \
+              src/utils/mempool.c
 
 # Create object file names by taking just the basename and adding .o
 READER_OBJS = $(notdir $(READER_SRCS:.c=.o))
