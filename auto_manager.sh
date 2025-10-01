@@ -34,7 +34,7 @@ ${YELLOW}核心命令:${NC}
   start      启动性能分析（带自动清理）
   stop       停止性能分析
   status     查看系统状态
-  cleanup    手动清理旧数据
+  cleanup    手动清理数据库旧数据
   install    安装systemd定时任务
   uninstall  卸载systemd定时任务
   logs       查看日志
@@ -43,7 +43,7 @@ ${YELLOW}start命令选项:${NC}
   --dir PATH          数据目录 (默认: $DEFAULT_DB_DIR)
   --frequency HZ      采样频率 (默认: $DEFAULT_FREQUENCY)
   --filter TYPE       过滤类型: user|kernel|all (默认: all)
-  --cleanup SEC       清理间隔秒数 (默认: 30)
+  --cleanup SEC       清理内存间隔秒数 (默认: 30)
   --stack-depth NUM   最大栈深度 (默认: 48)
   --db-batch-size NUM 数据库写入批处理大小 (默认: $DEFAULT_DB_BATCH_SIZE)
   --lbr               启用LBR精确调用栈
@@ -152,9 +152,6 @@ start_profiling() {
     [[ -n "$lbr" ]] && printf "  %-12s: 启用\n" "LBR模式"
     printf "\n"
 
-    # 启动后台清理守护进程
-    start_cleanup_daemon "$cleanup_secs" "$db_dir"
-
     # 启动性能分析工具到后台
     sudo nohup $cmd > "$DEFAULT_LOG_DIR/profiling_tool.log" 2>&1 &
     local profiling_pid=$!
@@ -174,31 +171,6 @@ start_profiling() {
     printf "  %-12s: %s\n" "查询命令" "./smart_query.sh --time '15:10-15:30'"
     printf "  %-12s: %s\n" "停止命令" "sudo ./auto_manager.sh stop"
     printf "  %-12s: %s\n" "查看状态" "./auto_manager.sh status"
-}
-
-# 启动后台清理守护进程
-start_cleanup_daemon() {
-    local cleanup_secs="${1:-30}"
-    local db_dir="${2:-$DEFAULT_DB_DIR}"
-
-    # 使用nohup确保后台进程不受终端影响
-    nohup bash -c "
-        while true; do
-            sleep $cleanup_secs
-            $SCRIPT_DIR/auto_manager.sh manual-cleanup --dir \"$db_dir\" --days $DAYS_TO_KEEP >/dev/null 2>&1 || true
-        done
-    " >/dev/null 2>&1 &
-
-    local daemon_pid=$!
-    echo $daemon_pid > "$DEFAULT_LOG_DIR/cleanup_daemon.pid"
-
-    # 确保进程确实在运行
-    if kill -0 $daemon_pid 2>/dev/null; then
-        echo -e "${GREEN}✓ 后台清理守护进程已启动 (PID: $daemon_pid)${NC}"
-    else
-        echo -e "${RED}✗ 后台清理守护进程启动失败${NC}"
-        return 1
-    fi
 }
 
 # 清理旧数据函数
@@ -298,27 +270,8 @@ stop_profiling() {
         echo -e "${YELLOW}性能分析未运行${NC}"
     fi
 
-    # 停止清理守护进程
-    if [[ -f "$DEFAULT_LOG_DIR/cleanup_daemon.pid" ]]; then
-        local pid=$(cat "$DEFAULT_LOG_DIR/cleanup_daemon.pid")
-        if kill "$pid" 2>/dev/null; then
-            echo -e "${GREEN}✓ 清理进程已停止 (PID: $pid)${NC}"
-            sleep 0.5
-            # 再次确认进程已停止
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null || true
-            fi
-        else
-            echo -e "${YELLOW}清理进程 (PID: $pid) 已停止或未运行${NC}"
-        fi
-        rm -f "$DEFAULT_LOG_DIR/cleanup_daemon.pid"
-        stopped=true
-    else
-        echo -e "${YELLOW}清理进程未运行${NC}"
-    fi
-
     # 清理PID文件
-    rm -f "$DEFAULT_LOG_DIR/profiling_tool.pid" "$DEFAULT_LOG_DIR/cleanup_daemon.pid"
+    rm -f "$DEFAULT_LOG_DIR/profiling_tool.pid"
 
     if [[ "$stopped" == true ]]; then
         echo -e "${GREEN}所有相关服务已停止${NC}"
@@ -340,18 +293,6 @@ show_status() {
         echo -e "${GREEN}✓ 性能分析: 运行中 (PID: $profiling_pid)${NC}"
     else
         echo -e "${RED}✗ 性能分析: 未运行${NC}"
-    fi
-
-    # 检查清理进程
-    if [[ -f "$SCRIPT_DIR/log/cleanup_daemon.pid" ]]; then
-        local pid=$(cat "$SCRIPT_DIR/log/cleanup_daemon.pid")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo -e "${GREEN}✓ 后台清理: 运行中 (PID: $pid)${NC}"
-        else
-            echo -e "${RED}✗ 后台清理: 未运行${NC}"
-        fi
-    else
-        echo -e "${RED}✗ 后台清理: 未运行${NC}"
     fi
 
     # 检查systemd定时任务
@@ -407,17 +348,10 @@ uninstall_systemd() {
 
 # 手动清理
 manual_cleanup() {
-    check_requirements
-
     echo -e "${GREEN}执行手动清理...${NC}"
+    # 确保相对路径（如 --dir tmp）以脚本目录为基准
     cd "$SCRIPT_DIR"
-
-    if [[ -f "./cleanup_profiles.sh" ]]; then
-        ./cleanup_profiles.sh --dir "$SCRIPT_DIR/tmp" "$@"
-    else
-        echo -e "${RED}清理脚本未找到${NC}"
-        exit 1
-    fi
+    cleanup_old_data "$@"
 }
 
 # 查看日志
