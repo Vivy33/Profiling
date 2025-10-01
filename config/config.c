@@ -35,12 +35,14 @@ void print_usage(const char* program_name) {
     printf("Usage: %s [options]\n", program_name);
     printf("Options:\n");
     printf("  --frequency=NUM    Sampling frequency in Hz (default: %d)\n", DEFAULT_SAMPLING_FREQUENCY);
+    printf("  --db-batch-size=NUM  Batch size for database writes (default: %d)\n", DEFAULT_DB_BATCH_SIZE);
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
     printf("  --output-dir=PATH  Directory for SQLite database storage (default: /tmp)\n");
     printf("  --http-port=NUM    HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
     printf("  --log-dir=PATH     Directory for program logs (default: /log)\n");
+    printf("  --histogram-log-path=PATH  File path for latency histogram logs (default: %s)\n", DEFAULT_HISTOGRAM_LOG_PATH);
     printf("  --lbr              Enable Last Branch Record (LBR) for precise call stacks\n");
     printf("  --help             Show this help message\n");
 }
@@ -63,7 +65,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->http_port = DEFAULT_HTTP_PORT; // 设置默认HTTP端口
     config->log_output_dir = DEFAULT_LOG_DIR;
     config->histogram_print_threshold = DEFAULT_HISTOGRAM_PRINT_THRESHOLD;
-    config->db_batch_size = 40; // Default batch size
+    config->histogram_log_path = DEFAULT_HISTOGRAM_LOG_PATH;
+    config->db_batch_size = DEFAULT_DB_BATCH_SIZE; // Default batch size
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -109,6 +112,16 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             config->log_output_dir = strdup(argv[i] + 10);
             if (!config->log_output_dir) {
                 fprintf(stderr, "Error: Failed to allocate memory for log_output_dir\n");
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--histogram-log-path=", 22) == 0) {
+            const char* path = argv[i] + 22;
+            if (config->histogram_log_path) {
+                free(config->histogram_log_path);
+            }
+            config->histogram_log_path = strdup(path);
+            if (!config->histogram_log_path) {
+                fprintf(stderr, "Error: Failed to allocate memory for histogram_log_path\n");
                 return -1;
             }
         } else if (strcmp(argv[i], "--lbr") == 0) {
