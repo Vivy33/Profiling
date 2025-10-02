@@ -2,7 +2,7 @@
 
 本项目是一个基于Linux `perf_event` 子系统的高性能采样分析器。它能够实时地将运行时指令地址（IP）转换为具体的函数符号，从而帮助开发者精确地定位用户态和内核态的性能热点。
 
-## Why?
+## Why continuous profiling is the fourth pillar of observability？
 
 常态化火焰图，解决的是性能抖动难以复现的问题。
 在线服务面对以下问题，现有排查工具通常无法及时定位问题现场：
@@ -22,7 +22,7 @@
 ## 核心能力
 
 - **全栈符号化**: 同时支持用户态（ELF符号）和内核态（kallsyms符号）的地址解析。
-- **双模式采样**: 支持基于软件定时器（默认，通用）和基于LBR硬件（可选，高精度）的两种采样模式。
+- **异步符号解析**: 与采集线程分离，`main_loop` 生产，`handler` 消费。
 - **实时符号化**: 采样地址到函数名的转换延迟极低，小于1毫秒。
 - **系统级监控**: 能够监控系统上的所有进程，提供全局性能视图。
 - **三级核心缓存**: 进程、ELF文件和内核符号三级缓存，最大化减少重复IO和解析开销。
@@ -44,7 +44,7 @@
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 事件循环层 (main_loop.c)                                                      
 │ ├── mmap环形缓冲区消费: perf_event_consume_ring_buffer()                       
-│ ├── 采样分发: dispatch_sample_event() → symbolize_sample()                    
+│ ├── 采样分发（生产者）: dispatch_sample_event() → queue_push(symbolizer_queue)                    
 │ └── 定期清理: cleanup_dead_processes()                                        
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ 采样源 / Perf 层 (perf.c)                                                     
@@ -52,7 +52,8 @@
 │ ├── sample_type: IP/TID/TIME/CALLCHAIN 或 BRANCH_STACK + REGS_USER           
 │ └── exclude_kernel/idle, mmap环形缓冲区                                       
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ 采样与符号化层 (handler.c)                                                     
+│ 采样与符号化层 (handler.c)                                                      
+│ ├── 符号化消费（消费者）: queue_pop(symbolizer_queue) → symbolize_sample()     
 │ ├── 地址空间判断与过滤: FILTER_USER / FILTER_KERNEL                            
 │ ├── 内核符号解析: find_kernel_symbol() [kernel]                               
 │ ├── 用户符号解析: find_new_process() → find_vma_from_process()                
@@ -71,12 +72,11 @@
 │ ├── 辅助脚本: smart_query.sh → flamegraph.pl                                  
 │ └── 可视化输出: profile.svg                                                    
 ├─────────────────┬────────────────────┬──────────────────────┬──────────────────┤
-│ELF解析层         进程管理             数据结构与工具层         内核符号解析层   
-│ elf.c            process.c           rbtree.c + hash.c      kernel_symbol.c  
-│ ├── ELF解析      ├── 进程创建         ├── 红黑树操作          ├── kallsyms解析 
-│ ├── 符号提取      ├── VMA管理         ├── 哈希表实现          └── 内核符号缓存 
-│ └── ELF缓存       └── 死进程清理      ├── 核心缓存                            
-│                                      └── 速率限制                            
+│ELF解析层       进程管理             数据结构与工具层         内核符号解析层   
+│ elf.c           process.c          utils                  kernel_symbol.c  
+│ ├── ELF解析     ├── 进程创建         ├── 红黑树操作          ├── kallsyms解析 
+│ ├── 符号提取     ├── VMA管理         ├── 哈希表实现          └── 内核符号缓存 
+│ └── ELF缓存      └── 死进程清理       ├── 核心缓存与内存池                                                        
 └─────────────────┴────────────────────┴──────────────────────┴──────────────────┘
 ```
 
@@ -171,7 +171,7 @@ sudo ./smart_query.sh --time "last 10 minutes" --flame > folded_stacks.txt
 - `status`: 查看性能分析工具、后台清理守护进程和 systemd 定时任务的状态。
 - `cleanup`: 手动清理旧数据。
   - 选项: `--days <NUM>`, `--dry-run`
-- `install`: 安装 systemd 定时任务，用于定期清理旧数据。
+- `install`: 安装 systemd 定时任务，用于定期清理数据库旧数据。
 - `uninstall`: 卸载 systemd 定时任务。
 - `logs`: 查看 `profiling_tool` 的实时日志。
 
