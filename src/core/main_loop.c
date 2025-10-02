@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -39,7 +38,7 @@ static void dispatch_sample_event(struct perf_event_header *header, void *contex
 
         parse_sample_data(header, &result, MAX_STACK_DEPTH_COPY);
 
-        struct raw_sample *sample = (struct raw_sample *)mempool_alloc(sample_pool);
+        struct raw_sample *sample = (struct raw_sample *)mempool_alloc(sys_info->sample_pool);
         if (sample == NULL) {
             // 当内存池耗尽时，打印错误并丢弃样本。在高负载下，这可以防止性能下降。
             fprintf(stderr, "Failed to allocate memory from pool for raw_sample, dropping sample.\n");
@@ -52,33 +51,28 @@ static void dispatch_sample_event(struct perf_event_header *header, void *contex
         sample->ip = result.ip;
         sample->nr = (result.nr < MAX_STACK_DEPTH_COPY) ? result.nr : MAX_STACK_DEPTH_COPY;
 
-        // 深拷贝调用栈
-        for (uint64_t i = 0; i < sample->nr; i++) {
-            sample->ips[i] = result.ips[i];
-        }
+        // 使用 memcpy 进行调用栈的深拷贝。
+        // 这里的源（result.ips）和目标（sample->ips）内存区域是完全独立的，
+        // 不存在重叠的风险，因此使用 memcpy 是安全且高效的。
+        // 相比于 for 循环，memcpy 通常能获得更好的性能，因为它能利用底层的硬件优化。
+        // 复制的字节数由实际的调用栈深度（sample->nr）决定，确保了操作的安全性，不会导致缓冲区溢出。
+        memcpy(sample->ips, result.ips, sample->nr * sizeof(uint64_t));
 
+        // 将填充好数据的样本推入并发队列，供符号化线程消费。
+        // 该队列的实现保证了线程安全。如果队列已满，它可能会阻塞或丢弃样本，
+        // 具体行为取决于其内部实现，但此处我们假设它能正确处理。
         queue_push(sys_info->symbolizer_queue, sample);
     }
 }
 
 /**
- * @brief 主事件循环 - 采用自适应休眠策略
+ * @brief 主事件循环，负责从perf_event中读取和处理性能数据。
  * @param system_info 指向system_context结构体的指针，包含进程哈希表和ELF文件缓存等系统全局信息。
  * @param manager 指向perf_event_manager结构体的指针，包含所有perf事件的文件描述符和元数据。
  */
 void main_loop(struct system_context* system_info, struct perf_event_manager* manager) {
     extern struct profiling_config global_config;
 
-    // 初始化样本内存池，用于存储从perf事件中解析出的原始样本数据。
-    // 预分配10240个样本空间，以减少在高并发采样时频繁的malloc/free开销。
-    // 一个 struct raw_sample 对象的大小约为 1056 字节（ 8*4 + 128*8 ）。
-    // 10240 个样本占用的内存大约是 10240 * 1056 ≈ 10.3 MB
-    sample_pool = mempool_create(10240, sizeof(struct raw_sample));
-    if (!sample_pool) {
-        perror("mempool_create failed");
-        return;
-    }
-    
     time_t last_cleanup_time = time(NULL);
 // gettimeofday 量化时间 方便日后debug    
 // struct timeval start_time, end_time;
@@ -119,6 +113,4 @@ if (total_events_processed > 0) {
         // 如果处理了事件，则立即再次循环，以尽快处理下一批数据
     }
 
-    // 在主循环退出后，销毁内存池，释放所有预分配的内存资源。
-    mempool_destroy(sample_pool);
 }
