@@ -1,6 +1,6 @@
 /**
  * @file handler.c
- * @brief 采样数据处理核心模块
+ * @brief 采样数据处理核心模块 
  * 
  * 负责将perf_event产生的原始采样数据转换为可读的性能信息。
  * 实现了完整的地址到符号的转换流程：
@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "../../include/header.h"
 #include "../../include/config.h"
@@ -116,50 +117,6 @@ void parse_sample_data(struct perf_event_header *header, struct callchain_result
             memcpy(result->ips, ptr, count_to_copy * sizeof(uint64_t));
         }
     }
-}
-
-/**
- * @brief 符号化工作线程函数
- *
- * 该函数是符号化处理的消费者。它在一个无限循环中运行，持续地从并发队列
- * `symbolizer_queue` 中拉取（pop）原始采样数据（`raw_sample`）。
- *
- * 主要工作流程：
- * 1. 从队列中阻塞等待一个新的 `raw_sample`。
- * 2. 如果收到的样本为NULL，则视其为终止信号，线程退出循环。
- * 3. 将 `raw_sample` 的数据复制到一个临时的 `callchain_result` 结构中。
- * 4. 调用 `symbolize_sample` 函数，执行核心的符号化逻辑。
- * 5. 符号化完成后，调用 `mempool_free` 将 `raw_sample` 对象归还到内存池，
- *    以供复用，避免了频繁的内存分配和释放。
- *
- * @param arg 指向 `system_context` 结构体的指针，包含了队列等共享资源。
- * @return NULL
- */
-void* symbolizer_thread_func(void* arg) {
-    struct system_context* sys = (struct system_context*)arg;
-    concurrent_queue_t* q = sys->symbolizer_queue;
-
-    while (true) {
-        struct raw_sample* sample = queue_pop(q);
-        if (sample == NULL) {
-            break; 
-        }
-
-        struct callchain_result result;
-        result.timestamp_ns = sample->timestamp_ns;
-        result.pid = sample->pid;
-        result.tid = sample->tid;
-        result.ip = sample->ip;
-        result.nr = sample->nr;
-        result.ips = sample->ips;
-
-        symbolize_sample(sys, &result, sys->db_context, sample->timestamp_ns);
-
-        // 样本处理完毕后，将其归还给内存池，以便后续的采样可以复用这块内存。
-        mempool_free(sample_pool, sample);
-    }
-
-    return NULL;
 }
 
 /**
@@ -311,4 +268,76 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
              callchain->pid, process_name, flame_buffer);
     
     db_writer_push_stack(db_context, realtime_timestamp_ns, db_stack_str);
+}
+
+/**
+ * @brief 符号化工作线程函数
+ *
+ * 该函数是符号化处理的消费者。它在一个无限循环中运行，持续地从并发队列
+ * `symbolizer_queue` 中拉取（pop）原始采样数据（`raw_sample`）。
+ *
+ * 主要工作流程：
+ * 1. 从队列中阻塞等待一个新的 `raw_sample`。
+ * 2. 如果收到的样本为NULL，则视其为终止信号，线程退出循环。
+ * 3. 将 `raw_sample` 的数据复制到一个临时的 `callchain_result` 结构中。
+ * 4. 调用 `symbolize_sample` 函数，执行核心的符号化逻辑。
+ * 5. 符号化完成后，调用 `mempool_free` 将 `raw_sample` 对象归还到内存池，
+ *    以供复用，避免了频繁的内存分配和释放。
+ *
+ * @param arg 指向 `system_context` 结构体的指针，包含了队列等共享资源。
+ * @return NULL
+ */
+void* symbolizer_thread_func(void* arg) {
+    struct system_context* sys = (struct system_context*)arg;
+    concurrent_queue_t* q = sys->symbolizer_queue;
+
+    while (true) {
+        struct raw_sample* sample = queue_pop(q);
+        if (sample == NULL) {
+            break; 
+        }
+
+        struct callchain_result result;
+        result.timestamp_ns = sample->timestamp_ns;
+        result.pid = sample->pid;
+        result.tid = sample->tid;
+        result.ip = sample->ip;
+        result.nr = sample->nr;
+        result.ips = sample->ips;
+
+        symbolize_sample(sys, &result, sys->db_context, sample->timestamp_ns);
+
+        // 样本处理完毕后，将其归还给内存池，以便后续的采样可以复用这块内存。
+        mempool_free(sample_pool, sample);
+    }
+
+    return NULL;
+}
+
+/**
+ * @brief 初始化并启动符号化线程
+ *
+ * 该函数负责创建符号化处理所需的核心组件：
+ * 1. 创建一个并发队列，用于从主事件循环（生产者）接收原始采样数据。
+ * 2. 创建并启动一个专用的符号化线程（消费者），该线程将执行 `symbolizer_thread_func`。
+ *
+ * @param context 指向 `system_context` 的指针，该结构体将被更新以包含新创建的队列和线程ID。
+ * @return 成功时返回0，失败时返回-1。
+ */
+int symbolizer_init(struct system_context *context) {
+    // 1. 创建并发队列，容量设置为 1024
+    context->symbolizer_queue = queue_init(1024);
+    if (!context->symbolizer_queue) {
+        fprintf(stderr, "Error: Failed to create symbolizer queue\n");
+        return -1;
+    }
+
+    // 2. 创建并启动符号化线程
+    if (pthread_create(&context->symbolizer_thread, NULL, symbolizer_thread_func, context) != 0) {
+        fprintf(stderr, "Error: Failed to create symbolizer thread\n");
+        queue_destroy(context->symbolizer_queue);
+        return -1;
+    }
+
+    return 0;
 }
