@@ -26,7 +26,7 @@ struct mempool_s {
     size_t chunk_size;          /**< 每个内存块（chunk）的大小，单位为字节。 */
     size_t count;               /**< 当前内存池中可用的空闲内存块数量。 */
     pthread_mutex_t lock;       /**< 互斥锁，用于保证在多线程环境下的线程安全。 */
-};
+}; 
 
 /**
  * @brief 创建一个新的内存池。
