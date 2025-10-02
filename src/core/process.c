@@ -26,12 +26,10 @@
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <errno.h>
 
 #include "../../include/header.h"
 #include "../../include/hash.h"
 #include "../../include/rbtree.h"
-#include "../../include/config.h"
 
 /**
  * @brief 从/proc/[pid]/stat获取进程启动时间
