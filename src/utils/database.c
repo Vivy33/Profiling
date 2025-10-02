@@ -213,14 +213,29 @@ void db_writer_push_stack(db_writer_context_t *context, uint64_t timestamp_ns, c
 
     push_count++;
     if (push_count >= context->config->histogram_print_threshold) {
-        fprintf(stderr, "DEBUG: Latency bucket distribution:\n");
-        for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
-            if (bucket_thresholds[i] == -1) {
-                fprintf(stderr, "    > %lld ns: %lld\n", bucket_thresholds[i-1], latency_buckets[i]);
-            } else {
-                fprintf(stderr, "    < %lld ns: %lld\n", bucket_thresholds[i], latency_buckets[i]);
+        // 当达到阈值时，将直方图写入独立日志文件
+        FILE *log_file = fopen(context->config->histogram_log_path, "a");
+        if (log_file) {
+            time_t now;
+            time(&now);
+            char time_buf[32];
+            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+            fprintf(log_file, "[%s] Queue push latency histogram (ns):\n", time_buf);
+            for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+                if (bucket_thresholds[i] == -1) {
+                    fprintf(log_file, "    > %lld ns: %lld\n", bucket_thresholds[i-1], latency_buckets[i]);
+                } else {
+                    fprintf(log_file, "    < %lld ns: %lld\n", bucket_thresholds[i], latency_buckets[i]);
+                }
             }
+            fprintf(log_file, "\n");
+            fclose(log_file);
+            fprintf(stderr, "DEBUG: Histogram written to %s\n", context->config->histogram_log_path);
+        } else {
+            fprintf(stderr, "ERROR: Could not open histogram log file %s: %s\n", context->config->histogram_log_path, strerror(errno));
         }
+
         memset(latency_buckets, 0, sizeof(latency_buckets));
         push_count = 0;
     }
