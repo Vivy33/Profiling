@@ -30,12 +30,14 @@
 #include <string.h>
 #include <libelf.h>
 #include <signal.h>
+#include <libgen.h>
 
 #include "include/header.h"
 #include "include/config.h"
 #include "include/perf.h"
 #include "include/database.h"
 #include "include/http_server.h"
+#include "include/mempool.h"
 
 #define PATH_MAX 4096
 
@@ -159,6 +161,25 @@ int main(int argc, char* argv[]) {
     }
     db_writer_start(db_context);
 
+    // 确保直方图日志目录存在
+    if (global_config.histogram_log_path && strlen(global_config.histogram_log_path) > 0) {
+        char *path_copy = strdup(global_config.histogram_log_path);
+        if (path_copy) {
+            char *dir = dirname(path_copy);
+            struct stat st = {0};
+            if (stat(dir, &st) == -1) {
+                if ((mkdir(dir, 0755) != 0) && errno != EEXIST) {
+                    fprintf(stderr, "ERROR: Failed to create histogram log directory '%s': %s\n", dir, strerror(errno));
+                } else {
+                    fprintf(stderr, "DEBUG: Created histogram log directory: %s\n", dir);
+                }
+            } else {
+                fprintf(stderr, "DEBUG: Histogram log directory exists: %s\n", dir);
+            }
+            free(path_copy);
+        }
+    }
+
     // 阶段3.5: HTTP服务初始化
     http_context = http_server_start(global_config.http_port, db_context);
     if (!http_context) {
@@ -194,6 +215,7 @@ int main(int argc, char* argv[]) {
      * - 进程哈希表：用于PID到进程信息的快速查找
      * - ELF文件缓存：避免重复解析ELF文件
      * - libelf库初始化：确保ELF解析功能可用
+     * - sample_pool：用于存储原始采样数据的内存池
      */
     struct system_context system_info;
     if (initialize_system(&system_info)) {
@@ -207,6 +229,35 @@ int main(int argc, char* argv[]) {
     }
     // 将db_context传递给system_info，以便在main_loop中使用
     system_info.db_context = db_context;
+
+    // 初始化sample内存池，用于存储从perf事件中解析出的原始样本数据。
+    // 预分配10240个样本空间，以减少在高并发采样时频繁的malloc/free开销。
+    // 一个 struct raw_sample 对象的大小约为 1056 字节（ 8*4 + 128*8 ）。
+    // 10240 个样本占用的内存大约是 10240 * 1056 ≈ 10.3 MB
+    system_info.sample_pool = mempool_create(10240, sizeof(struct raw_sample));
+    if (!system_info.sample_pool) {
+        fprintf(stderr, "Error: Failed to create sample memory pool\n");
+        perf_event_cleanup_manager(manager);
+        if (db_context) {
+            db_writer_stop(db_context);
+            db_writer_wait(db_context);
+        }
+        cleanup_system(&system_info);
+        return 1;
+    }
+
+    // 阶段 5.5: 初始化并启动符号化线程
+    if (symbolizer_init(&system_info) != 0) {
+        fprintf(stderr, "Error: Failed to initialize symbolizer thread\n");
+        perf_event_cleanup_manager(manager);
+        if (db_context) {
+            db_writer_stop(db_context);
+            db_writer_wait(db_context);
+        }
+        cleanup_system(&system_info);
+    mempool_destroy(system_info.sample_pool);
+        return 1;
+    }
 
     /**
      * 阶段6：主事件循环
