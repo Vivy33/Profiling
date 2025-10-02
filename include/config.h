@@ -12,8 +12,6 @@ enum filter_mode {
 };
 
 // 性能分析配置
-
-
 struct profiling_config {
     int sampling_frequency;             // 采样频率 (Hz)
     enum filter_mode filter_mode;       // 显示过滤模式
@@ -24,6 +22,7 @@ struct profiling_config {
     int http_port;                      // HTTP服务器监听端口
     char* log_output_dir;               // 日志输出目录
     int histogram_print_threshold;      // 延迟直方图打印阈值
+    char* histogram_log_path;           // 延迟直方图日志文件路径
     int db_batch_size;                  // 数据库写入的批处理大小
 };
 
@@ -40,6 +39,7 @@ int validate_config(struct profiling_config* config);
 #define DEFAULT_LOG_DIR "/log"           // 默认日志输出目录
 #define DEFAULT_DB_DIR "/tmp"            // 默认数据库输出目录
 #define DEFAULT_HISTOGRAM_PRINT_THRESHOLD 1000 // 默认直方图打印阈值
-#define MAX_TARGETS 32                   // 最大目标进程数
+#define DEFAULT_HISTOGRAM_LOG_PATH "log/histogram.log" // 默认直方图日志路径
+#define DEFAULT_DB_BATCH_SIZE 40        // 默认数据库写入批处理大小
 
 #endif // CONFIG_H
