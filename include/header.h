@@ -1,7 +1,6 @@
 #ifndef HEADER_H
 #define HEADER_H
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,10 +21,15 @@
 
 #define HASHTABLE_SIZE 1024
 
+// 创建一个安全的栈上缓冲区来存储调用栈IP。
+// 内核默认栈深度通常不超过127，我们这里设置一个安全的上限。
+#define MAX_STACK_DEPTH_COPY 128
+
 #include "rbtree.h"
 #include "hash.h"
 #include "perf.h"
 #include "kernel_symbol.h"
+#include "concurrent_queue.h"
 
 #define READ 0x1
 #define WRITE 0x2
@@ -109,17 +113,52 @@ struct system_context {
     struct elf_file_cache* elf_cache;          // ELF文件缓存
     struct rb_root *kernel_symbols;            // 内核符号红黑树
     struct db_writer_context_t *db_context;    // 数据库写入器上下文
+    concurrent_queue_t* symbolizer_queue;      // 用于在主循环和符号化线程之间传递样本数据的并发队列
+    pthread_t symbolizer_thread;               // 符号化线程
+    struct mempool_s *sample_pool;             // sample内存池
     uint64_t monotonic_start_ns;               // 系统启动时的单调时间 (纳秒)
     uint64_t realtime_start_ns;                // 系统启动时的实时时间 (纳秒)
 };
 
 // 调用栈解析结果
+/**
+ * @brief 临时存储样本事件的核心数据。
+ *
+ * 该结构体用于在 `dispatch_sample_event` 函数中临时存放从 perf 事件中解析出的关键信息，
+ * 包括时间戳、PID/TID、指令指针（IP）以及调用栈（ips）。
+ *
+ * `ips` 字段是一个指向栈上分配的缓冲区的指针 (`ips_buffer`)，这么做是为了避免在
+ * 高频调用的回调函数中进行堆分配（`malloc`），从而减少性能开销和内存碎片。
+ *
+ * 在数据被复制到内存池分配的 `raw_sample` 对象后，此结构体的生命周期即结束。
+ */
 struct callchain_result {
     uint64_t timestamp_ns; // 内核提供的纳秒级高精度时间戳
     uint32_t pid, tid;
     uint64_t ip;
     uint64_t nr;
     uint64_t *ips;
+};
+
+/**
+ * @brief 用于在生产者和消费者之间传递的样本数据结构。
+ *
+ * 这个结构体专门设计用于在主事件循环（生产者）和符号化线程（消费者）之间通过并发队列
+ * (`symbolizer_queue`) 进行数据传递。
+ *
+ * 为了实现零拷贝和高性能，`raw_sample` 对象的内存完全由一个内存池 (`mempool`) 管理。
+ * 生产者从池中获取一个 `raw_sample` 对象，填充数据，然后将其指针推入队列。
+ * 消费者处理完数据后，将该对象归还给内存池，而不是释放它。
+ *
+ * `ips` 数组直接嵌入结构体中，确保了数据在内存中的连续性，使得整个 `raw_sample`
+ * 对象可以作为一个单独的内存块在内存池中进行高效分配和回收。
+ */
+struct raw_sample {
+    uint64_t timestamp_ns;
+    uint32_t pid, tid;
+    uint64_t ip;
+    uint64_t nr;
+    uint64_t ips[MAX_STACK_DEPTH_COPY];
 };
 
 struct sample_data {
@@ -132,6 +171,12 @@ struct sample_data {
 
 // main_loop.c
 void main_loop(struct system_context* system_info, struct perf_event_manager* manager);
+
+// 声明符号化线程初始化函数
+int symbolizer_init(struct system_context *context);
+
+// 声明并发队列初始化函数
+concurrent_queue_t* queue_init(int capacity);
 
 // system.c
 int initialize_system(struct system_context* system_info);
