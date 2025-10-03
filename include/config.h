@@ -17,6 +17,7 @@ struct profiling_config {
     enum filter_mode filter_mode;       // 显示过滤模式
     int cleanup_interval;               // 死进程清理间隔 (秒)
     int max_stack_depth;                // 最大栈回溯深度
+    int sample_pool_size;               // 样本内存池大小
     bool use_lbr;                       // 是否启用LBR
     char* db_output_dir;                // SQLite数据库输出目录
     int http_port;                      // HTTP服务器监听端口
@@ -35,6 +36,7 @@ int validate_config(struct profiling_config* config);
 #define DEFAULT_SAMPLING_FREQUENCY 30    // 30Hz
 #define DEFAULT_CLEANUP_INTERVAL 30      // 30秒
 #define DEFAULT_MAX_STACK_DEPTH 48       // 默认栈深度
+#define DEFAULT_SAMPLE_POOL_SIZE 99297   // 默认样本池大小 (约100MB)
 #define DEFAULT_HTTP_PORT 8081           // 默认HTTP服务器端口
 #define DEFAULT_LOG_DIR "/log"           // 默认日志输出目录
 #define DEFAULT_DB_DIR "/tmp"            // 默认数据库输出目录
