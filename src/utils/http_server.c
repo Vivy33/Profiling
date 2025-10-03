@@ -9,8 +9,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "../../include/http_server.h"
-#include "../../include/database.h" // 包含 db_writer_get_db_handle
+#include "include/http_server.h"
+#include "include/database.h" // 包含 db_writer_get_db_handle
 
 // 说明：为了解决缺少网络相关符号（sockaddr_in/htons/htonl/INADDR_LOOPBACK）导致的编译错误，
 // 我们显式引入 sys/socket.h、netinet/in.h、arpa/inet.h 头文件；
