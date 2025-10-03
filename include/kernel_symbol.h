@@ -1,8 +1,9 @@
 #ifndef KERNEL_SYMBOL_H
 #define KERNEL_SYMBOL_H
 
-#include "rbtree.h"
 #include <stdint.h>
+
+#include "include/rbtree.h"
 
 // 定义内核符号的数据结构
 struct kernel_symbol {
