@@ -1,6 +1,6 @@
 #include <stdlib.h>
 #include <pthread.h>
-#include "../../include/concurrent_queue.h"
+#include "include/concurrent_queue.h"
 
 /**
  * @file concurrent_queue.c
@@ -123,7 +123,7 @@ void* queue_pop(concurrent_queue_t* queue) {
 /**
  * @brief 从队列中批量弹出一组元素（消费者）。
  */
-int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items) {
+int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items, long long *latency_ns) {
     pthread_mutex_lock(&queue->mutex);
 
     // 当队列为空且未关闭时，等待
@@ -134,8 +134,12 @@ int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items) {
     // 如果队列已关闭且为空，则返回 0，表示结束
     if (queue->shutdown && queue->size == 0) {
         pthread_mutex_unlock(&queue->mutex);
+        if (latency_ns) *latency_ns = 0;
         return 0;
     }
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     int actual_pop_count = 0;
     // 实际要弹出的数量是 max_items 和当前队列大小的最小值
@@ -148,6 +152,11 @@ int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items) {
         actual_pop_count++;
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    if (latency_ns) {
+        *latency_ns = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
+    }
+
     // 通知可能正在等待的生产者
     if (actual_pop_count > 0) {
         pthread_cond_signal(&queue->cond_full);
@@ -156,6 +165,54 @@ int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items) {
 
     return actual_pop_count;
 }
+
+/**
+ * @brief 向队列中批量推送一组元素（生产者）。
+ */
+void queue_push_batch(concurrent_queue_t* queue, void** items, int count, long long *latency_ns) {
+    if (!queue || !items || count <= 0) {
+        if (latency_ns) *latency_ns = 0;
+        return;
+    }
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    pthread_mutex_lock(&queue->mutex);
+
+    // 当队列剩余空间不足以容纳整个批次，且未关闭时，等待
+    while ((queue->capacity - queue->size) < count && !queue->shutdown) {
+        pthread_cond_wait(&queue->cond_full, &queue->mutex);
+    }
+
+    // 如果队列已关闭，则直接返回
+    if (queue->shutdown) {
+        pthread_mutex_unlock(&queue->mutex);
+        if (latency_ns) {
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            *latency_ns = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
+        }
+        return;
+    }
+
+    // 批量将元素放入队尾
+    for (int i = 0; i < count; ++i) {
+        queue->buffer[queue->tail] = items[i];
+        queue->tail = (queue->tail + 1) % queue->capacity;
+    }
+    queue->size += count;
+
+    // 通知可能正在等待的消费者
+    // 使用 broadcast 而不是 signal，以防有多个消费者在等待
+    pthread_cond_broadcast(&queue->cond_empty);
+    pthread_mutex_unlock(&queue->mutex);
+
+    if (latency_ns) {
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        *latency_ns = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
+    }
+}
+
 
 /**
  * @brief 向队列发送关闭信号。
