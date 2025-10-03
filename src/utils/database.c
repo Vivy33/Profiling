@@ -313,6 +313,7 @@ static int ensure_db_handle(db_writer_context_t *context, uint64_t timestamp_ns)
  *
  * 该线程从并发队列中批量弹出数据，并将其写入 SQLite 数据库。
  * 它会根据时间戳自动切换数据库文件，并使用事务来提高写入性能。
+ * 通过调用 queue_pop_batch 实现高效的批量消费，减少锁争用。
  *
  * @param arg 指向 db_writer_context_t 结构体的指针。
  * @return 总是返回 NULL。
@@ -320,136 +321,120 @@ static int ensure_db_handle(db_writer_context_t *context, uint64_t timestamp_ns)
 static void *db_writer_thread_func(void *arg) {
     db_writer_context_t *context = (db_writer_context_t *)arg;
     sqlite3_stmt *stmt = NULL;
-    
-    db_entry_t **batch = malloc(sizeof(db_entry_t*) * context->config->db_batch_size);
+
+    // 从配置中获取批处理大小
+    int batch_size = context->config->db_batch_size;
+    // 为批量处理分配内存缓冲区
+    db_entry_t **batch = malloc(sizeof(db_entry_t*) * batch_size);
     if (!batch) {
         fprintf(stderr, "Failed to allocate memory for batch\n");
         return NULL;
     }
 
-    int count = 0;
     fprintf(stderr, "DEBUG: DB writer thread started.\n");
 
-    // 线程运行条件：context->running 为 true 或队列中仍有数据
+    // 线程主循环：只要线程在运行或队列中还有数据，就继续处理
     while (context->running || queue_get_size(context->queue) > 0) {
-        // 尝试从队列中弹出单个元素
-        void* item = queue_pop(context->queue);
-        if (item) {
-            batch[count++] = (db_entry_t*)item;
-            fprintf(stderr, "DEBUG: Item popped from queue, count: %d\n", count);
-        } else {
-            // 如果队列已关闭且为空，queue_pop 会返回 NULL
-            if (!context->running && count == 0) {
+        // 从队列中批量弹出一批数据项
+        // 这是一个阻塞操作，直到有数据或队列关闭
+        int count = queue_pop_batch(context->queue, (void**)batch, batch_size);
+
+        // 如果没有弹出任何数据
+        if (count == 0) {
+            // 如果线程已停止，说明队列已空且不会再有新数据，可以安全退出
+            if (!context->running) {
                 fprintf(stderr, "DEBUG: Queue is empty and shutdown, exiting thread.\n");
                 break;
             }
+            // 如果线程仍在运行，但队列暂时为空，则继续下一次循环等待
+            continue;
         }
 
-        // 无论 item 是否为 NULL，只要有数据在 batch 中，并且满足批处理条件，就尝试处理
-        // 批处理条件：达到 BATCH_SIZE 或线程即将停止 (context->running 为 false)
-        if (count > 0 && (count >= context->config->db_batch_size || !context->running)) {
-            fprintf(stderr, "DEBUG: Processing batch, count: %d\n", count);
-            // 检查批次中的第一个元素是否有效，以避免潜在的空指针解引用
-            if (batch[0] == NULL) {
-                fprintf(stderr, "DEBUG: batch[0] is NULL, skipping ensure_db_handle.\n");
-                // 丢弃批次以避免阻塞
-                for (int i = 0; i < count; i++) {
-                    if (batch[i]) {
-                        free(batch[i]->stack_str);
-                        free(batch[i]);
-                    }
-                }
-                count = 0;
-                continue;
-            }
-            fprintf(stderr, "DEBUG: Calling ensure_db_handle.\n");
-            // 确保数据库句柄有效并指向正确的文件
-            if (ensure_db_handle(context, batch[0]->timestamp_ns) != 0) {
-                fprintf(stderr, "DEBUG: Failed to get DB handle, discarding batch.\n");
-                // 无法获取DB句柄，丢弃批次以避免阻塞
-                for (int i = 0; i < count; i++) {
-                    free(batch[i]->stack_str);
-                    free(batch[i]);
-                }
-                count = 0;
-                continue;
-            }
+        fprintf(stderr, "DEBUG: Processing batch, count: %d\n", count);
 
-            // 准备 SQL 插入语句
-            const char *sql = "INSERT INTO call_stacks (timestamp, pid, process_name, full_stack) VALUES (?, ?, ?, ?);";
-            if (sqlite3_prepare_v2(context->db, sql, -1, &stmt, 0) != SQLITE_OK) {
-                fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(context->db));
-                // 丢弃批次
-                for (int i = 0; i < count; i++) {
-                    free(batch[i]->stack_str);
-                    free(batch[i]);
-                }
-                count = 0;
-                continue;
-            }
-
-            sqlite3_exec(context->db, "BEGIN TRANSACTION;", 0, 0, 0); // 开始事务
-            
+        // 使用批次中的第一个数据项的时间戳来确保数据库句柄有效
+        // 这会处理按小时轮换数据库文件的逻辑
+        if (ensure_db_handle(context, batch[0]->timestamp_ns) != 0) {
+            fprintf(stderr, "DEBUG: Failed to get DB handle, discarding batch.\n");
+            // 如果无法获取数据库句柄，则丢弃整个批次以避免阻塞
             for (int i = 0; i < count; i++) {
-                db_entry_t *entry = batch[i];
-                
-                // 确保我们仍在使用正确的数据库文件
-                // 如果时间戳跨越了小时边界，可能需要切换数据库文件
-                if (ensure_db_handle(context, entry->timestamp_ns) != 0) {
-                    // 如果DB句柄改变，我们需要重新开始事务
-                    sqlite3_exec(context->db, "COMMIT;", 0, 0, 0); // 提交之前的事务
-                    // 此处简化处理：丢弃剩余部分并重新开始循环
-                    for (int j = i; j < count; j++) {
-                        free(batch[j]->stack_str);
-                        free(batch[j]);
-                    }
-                    count = 0;
-                    break; 
-                }
-
-                char *str_to_parse = entry->stack_str;
-                char *saveptr;
-                
-                // 解析调用栈字符串，格式为 "pid|process_name|full_stack"
-                char *token = strtok_r(str_to_parse, "|", &saveptr);
-                int pid = token ? atoi(token) : -1;
-                token = strtok_r(NULL, "|", &saveptr);
-                const char *process_name = token ? token : "unknown";
-                const char *full_stack = strtok_r(NULL, "", &saveptr);
-                if (!full_stack) full_stack = "";
-
-                // 绑定参数到 SQL 语句（注意内存管理策略）：
-                // - TEXT 参数统一使用 SQLITE_TRANSIENT，SQLite 会复制传入字符串，避免悬空指针。
-                // - 之前使用 SQLITE_STATIC 在异步写入线程场景下可能造成悬空引用。
-                sqlite3_bind_int64(stmt, 1, entry->timestamp_ns);
-                sqlite3_bind_int(stmt, 2, pid);
-                sqlite3_bind_text(stmt, 3, process_name, -1, SQLITE_TRANSIENT);
-                sqlite3_bind_text(stmt, 4, full_stack, -1, SQLITE_TRANSIENT);
-
-                // 执行 SQL 插入步骤
-                if (sqlite3_step(stmt) != SQLITE_DONE) {
-                    fprintf(stderr, "DEBUG: 执行SQL插入步骤失败: %s\n", sqlite3_errmsg(context->db));
-                } else {
-                    fprintf(stderr, "DEBUG: SQL insert step successful.\n");
-                }
-                sqlite3_reset(stmt); // 重置语句以便下次使用
-
-                free(entry->stack_str);
-                free(entry);
+                free(batch[i]->stack_str);
+                free(batch[i]);
             }
-            
-            if (count > 0) {
-                sqlite3_exec(context->db, "COMMIT;", 0, 0, 0); // 提交事务
-                fprintf(stderr, "DEBUG: Transaction committed.\n");
-            }
-            sqlite3_finalize(stmt); // 释放 SQL 语句句柄
-            stmt = NULL;
-            count = 0;
+            continue;
         }
 
-        // 如果线程停止且队列为空，则退出循环
-        if (!context->running && item == NULL) break;
+        // 准备 SQL 插入语句
+        const char *sql = "INSERT INTO call_stacks (timestamp, pid, process_name, full_stack) VALUES (?, ?, ?, ?);";
+        if (sqlite3_prepare_v2(context->db, sql, -1, &stmt, 0) != SQLITE_OK) {
+            fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(context->db));
+            // 如果准备失败，丢弃批次
+            for (int i = 0; i < count; i++) {
+                free(batch[i]->stack_str);
+                free(batch[i]);
+            }
+            continue;
+        }
+
+        // 开启数据库事务，以大幅提高批量插入的性能
+        sqlite3_exec(context->db, "BEGIN TRANSACTION;", 0, 0, 0);
+
+        // 遍历批次中的每一个数据项
+        for (int i = 0; i < count; i++) {
+            db_entry_t *entry = batch[i];
+
+            // 再次检查数据库句柄，以处理批次内时间戳跨越小时边界的情况
+            if (ensure_db_handle(context, entry->timestamp_ns) != 0) {
+                // 如果句柄发生变化，提交当前事务并丢弃批次中剩余的数据项
+                sqlite3_exec(context->db, "COMMIT;", 0, 0, 0);
+                for (int j = i; j < count; j++) {
+                    free(batch[j]->stack_str);
+                    free(batch[j]);
+                }
+                count = 0; // 标记批次已被丢弃
+                break;
+            }
+
+            // 解析调用栈字符串，格式为 "pid|process_name|full_stack"
+            char *str_to_parse = entry->stack_str;
+            char *saveptr;
+            char *token = strtok_r(str_to_parse, "|", &saveptr);
+            int pid = token ? atoi(token) : -1;
+            token = strtok_r(NULL, "|", &saveptr);
+            const char *process_name = token ? token : "unknown";
+            const char *full_stack = strtok_r(NULL, "", &saveptr);
+            if (!full_stack) full_stack = "";
+
+            // 将解析出的数据绑定到预准备的 SQL 语句
+            sqlite3_bind_int64(stmt, 1, entry->timestamp_ns);
+            sqlite3_bind_int(stmt, 2, pid);
+            sqlite3_bind_text(stmt, 3, process_name, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, full_stack, -1, SQLITE_TRANSIENT);
+
+            // 执行单次插入
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                fprintf(stderr, "DEBUG: 执行SQL插入步骤失败: %s\n", sqlite3_errmsg(context->db));
+            }
+            // 重置语句以便下一次循环使用
+            sqlite3_reset(stmt);
+
+            // 释放已处理数据项的内存
+            free(entry->stack_str);
+            free(entry);
+        }
+
+        // 如果批次被成功处理（或部分处理），提交事务
+        if (count > 0) {
+            sqlite3_exec(context->db, "COMMIT;", 0, 0, 0);
+            fprintf(stderr, "DEBUG: Transaction committed.\n");
+        }
+        // 释放 SQL 语句句柄
+        sqlite3_finalize(stmt);
+        stmt = NULL;
     }
+
+    // 释放为批处理分配的内存缓冲区
+    free(batch);
     fprintf(stderr, "DEBUG: DB writer thread stopped.\n");
 
     return NULL;
