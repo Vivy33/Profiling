@@ -20,6 +20,8 @@ DEFAULT_FREQUENCY=30
 DAYS_TO_KEEP=7
 DEFAULT_HTTP_PORT=8081
 DEFAULT_DB_BATCH_SIZE=40
+DEFAULT_SAMPLE_POOL_SIZE=99297
+DEFAULT_HISTOGRAM_LOG_PATH="$SCRIPT_DIR/log/histogram.log"
 PROFILING_TOOL="$SCRIPT_DIR/profiling_tool"
 QUERY_TOOL="$SCRIPT_DIR/query_tool"
 
@@ -46,6 +48,10 @@ ${YELLOW}start命令选项:${NC}
   --cleanup SEC       清理内存间隔秒数 (默认: 30)
   --stack-depth NUM   最大栈深度 (默认: 48)
   --db-batch-size NUM 数据库写入批处理大小 (默认: $DEFAULT_DB_BATCH_SIZE)
+  --sample-pool-size NUM 样本池大小 (默认: $DEFAULT_SAMPLE_POOL_SIZE)
+  --http-port NUM     HTTP服务端口 (默认: $DEFAULT_HTTP_PORT)
+  --log-dir PATH      日志目录 (默认: $DEFAULT_LOG_DIR)
+  --histogram-log-path PATH 直方图日志路径 (默认: $DEFAULT_HISTOGRAM_LOG_PATH)
   --lbr               启用LBR精确调用栈
 
 ${YELLOW}cleanup命令选项:${NC}
@@ -80,6 +86,10 @@ start_profiling() {
     local cleanup_secs="30"
     local stack_depth="48"
     local db_batch_size="$DEFAULT_DB_BATCH_SIZE"
+    local sample_pool_size="$DEFAULT_SAMPLE_POOL_SIZE"
+    local http_port="$DEFAULT_HTTP_PORT"
+    local log_dir="$DEFAULT_LOG_DIR"
+    local histogram_log_path="$DEFAULT_HISTOGRAM_LOG_PATH"
     local lbr=""
 
     # 解析参数
@@ -109,6 +119,22 @@ start_profiling() {
                 db_batch_size="$2"
                 shift 2
                 ;;
+            --sample-pool-size)
+                sample_pool_size="$2"
+                shift 2
+                ;;
+            --http-port)
+                http_port="$2"
+                shift 2
+                ;;
+            --log-dir)
+                log_dir="$2"
+                shift 2
+                ;;
+            --histogram-log-path)
+                histogram_log_path="$2"
+                shift 2
+                ;;
             --lbr)
                 lbr="--lbr"
                 shift
@@ -136,24 +162,57 @@ start_profiling() {
     fi
 
     # 创建目录
-    mkdir -p "$DEFAULT_DB_DIR" "$DEFAULT_LOG_DIR"
+    mkdir -p "$db_dir" "$log_dir"
+
+    # 清理旧日志
+    local log_file="$log_dir/profiling.log"
+    rm -f "$histogram_log_path" "$log_file" "$log_dir/profiling_tool.log"
 
     # 构建命令
-    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth --db-batch-size=$db_batch_size $lbr --http-port=$DEFAULT_HTTP_PORT --log-dir=$DEFAULT_LOG_DIR"
+    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth --db-batch-size=$db_batch_size --sample-pool-size=$sample_pool_size $lbr --http-port=$http_port --log-dir=$log_dir --histogram-log-path=$histogram_log_path"
 
+    # 记录到日志文件
+    {
+        echo "启动配置:"
+        printf "  %-22s: %s\n" "日志目录" "${log_dir}"
+        printf "  %-22s: %s\n" "数据目录" "${db_dir}"
+        printf "  %-22s: %s Hz\n" "采样频率" "${frequency}"
+        printf "  %-22s: %s\n" "过滤模式" "${filter}"
+        printf "  %-22s: %s 秒\n" "清理间隔" "${cleanup_secs}"
+        printf "  %-22s: %s 层\n" "最大栈深" "${stack_depth}"
+        printf "  %-23s: %s\n" "批处理大小" "${db_batch_size}"
+        printf "  %-23s: %s\n" "样本池大小" "${sample_pool_size}"
+        printf "  %-22s: %s\n" "HTTP服务端口" "${http_port}"
+        printf "  %-25s: %s\n" "直方图日志路径" "${histogram_log_path}"
+        [[ -n "$lbr" ]] && printf "  %-21s: 启用\n" "LBR模式"
+        echo
+    } > "$log_file"
+
+    # 打印到控制台
     printf "${GREEN}启动配置:${NC}\n"
-    printf "  %-12s: %s\n" "日志目录" "${DEFAULT_LOG_DIR}"
-    printf "  %-12s: %s\n" "数据目录" "${db_dir}"
-    printf "  %-12s: %s Hz\n" "采样频率" "${frequency}"
-    printf "  %-12s: %s\n" "过滤模式" "${filter}"
-    printf "  %-12s: %s 秒\n" "清理间隔" "${cleanup_secs}"
-    printf "  %-12s: %s 层\n" "最大栈深" "${stack_depth}"
-    printf "  %-12s: %s\n" "批处理大小" "${db_batch_size}"
-    [[ -n "$lbr" ]] && printf "  %-12s: 启用\n" "LBR模式"
+    printf "  %-22s: %s\n" "日志目录" "${log_dir}"
+    printf "  %-22s: %s\n" "数据目录" "${db_dir}"
+    printf "  %-22s: %s Hz\n" "采样频率" "${frequency}"
+    printf "  %-22s: %s\n" "过滤模式" "${filter}"
+    printf "  %-22s: %s 秒\n" "清理间隔" "${cleanup_secs}"
+    printf "  %-22s: %s 层\n" "最大栈深" "${stack_depth}"
+    printf "  %-23s: %s\n" "批处理大小" "${db_batch_size}"
+    printf "  %-23s: %s\n" "样本池大小" "${sample_pool_size}"
+    printf "  %-22s: %s\n" "HTTP服务端口" "${http_port}"
+    printf "  %-25s: %s\n" "直方图日志路径" "${histogram_log_path}"
+    [[ -n "$lbr" ]] && printf "  %-21s: 启用\n" "LBR模式"
     printf "\n"
 
+    # 检查是否以root权限运行
+    if [[ $EUID -ne 0 ]]; then
+        printf "${RED}错误: 此脚本必须以root权限运行。${NC}\n"
+        exit 1
+    fi
+
     # 启动性能分析工具到后台
-    sudo nohup $cmd > "$DEFAULT_LOG_DIR/profiling_tool.log" 2>&1 &
+    printf "${GREEN}正在启动性能分析器...${NC}\n"
+    echo "正在启动性能分析器..." >> "$log_file"
+    nohup $cmd >>"$log_file" 2>&1 &
     local profiling_pid=$!
 
     echo $profiling_pid > "$DEFAULT_LOG_DIR/profiling_tool.pid"
@@ -167,12 +226,11 @@ start_profiling() {
 
     printf "\n"
     printf "${GREEN}性能分析正在后台运行${NC}\n"
-    printf "  %-12s: %s\n" "日志文件" "${DEFAULT_LOG_DIR}/profiling_tool.log"
+    printf "  %-12s: %s\n" "日志文件" "${log_file}"
     printf "  %-12s: %s\n" "查询命令" "./smart_query.sh --time '15:10-15:30'"
     printf "  %-12s: %s\n" "停止命令" "sudo ./auto_manager.sh stop"
     printf "  %-12s: %s\n" "查看状态" "./auto_manager.sh status"
 }
-
 # 清理旧数据函数
 cleanup_old_data() {
     local db_dir="$DEFAULT_DB_DIR"
@@ -356,8 +414,8 @@ manual_cleanup() {
 
 # 查看日志
 show_logs() {
-    echo -e "${GREEN}查看 profiling_tool 日志...${NC}"
-    local log_file="$DEFAULT_LOG_DIR/profiling_tool.log"
+    echo -e "${GREEN}查看 profiling 日志...${NC}"
+    local log_file="$DEFAULT_LOG_DIR/profiling.log"
     if [[ -f "$log_file" ]]; then
         tail -f "$log_file"
     else
