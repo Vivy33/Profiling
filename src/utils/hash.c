@@ -1,5 +1,5 @@
-#include "../include/hash.h"
-#include "../include/header.h"
+#include "include/hash.h"
+#include "include/header.h"
 
 // 哈希函数 - 用于PID
 unsigned int hash_pid(int pid) {
