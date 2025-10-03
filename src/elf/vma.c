@@ -24,7 +24,7 @@
 #include <unistd.h>
 #include <stddef.h>
 
-#include "../include/header.h"
+#include "include/header.h"
 
 /**
  * @brief 递归释放VMA红黑树的所有节点
