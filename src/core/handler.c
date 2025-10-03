@@ -31,10 +31,6 @@
 #include "../../include/concurrent_queue.h"
 #include "../../include/mempool.h"
 
-// 声明一个外部的内存池指针，该内存池在 main_loop.c 中被创建和管理。
-// extern让符号化线程能够访问并归还内存块。
-extern struct mempool_s *sample_pool;
-
 // PERF_CONTEXT_MAX 是有效IP地址的上限。
 // 超过此值的地址是上下文标记。此值来自内核UAPI
 #ifndef PERF_CONTEXT_MAX
@@ -191,6 +187,11 @@ void symbolize_sample(struct system_context *sys, struct callchain_result *callc
                     process_name = (proc_info && proc_info->process_name) ? proc_info->process_name : "unknown";
                     if (!proc_info) {
                         snprintf(func_name, sizeof(func_name), "[process_recycled]");
+                        // 在proc_info为NULL时，直接进入下一次循环
+                        strcat(flame_buffer, ";");
+                        strcat(flame_buffer, func_name);
+                        flame_len += strlen(func_name) + 1;
+                        continue;
                     }
                 }
 
@@ -307,8 +308,8 @@ void* symbolizer_thread_func(void* arg) {
 
         symbolize_sample(sys, &result, sys->db_context, sample->timestamp_ns);
 
-        // 样本处理完毕后，将其归还给内存池，以便后续的采样可以复用这块内存。
-        mempool_free(sample_pool, sample);
+        // 样本处理完毕后，将其归还给系统上下文中的内存池，避免泄漏。
+        mempool_free(sys->sample_pool, sample);
     }
 
     return NULL;
