@@ -13,7 +13,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-#include "../../include/rbtree.h" //linux/rbtree.h
+#include "include/rbtree.h" //linux/rbtree.h
 
 struct rb_augment_callbacks {
     void (*propagate)(struct rb_node *node, struct rb_node *stop);
