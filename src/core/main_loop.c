@@ -3,10 +3,10 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../../include/header.h"
-#include "../../include/config.h"
-#include "../../include/perf.h"
-#include "../../include/mempool.h"
+#include "include/header.h"
+#include "include/config.h"
+#include "include/perf.h"
+#include "include/mempool.h"
 
 struct mempool_s *sample_pool;
 
