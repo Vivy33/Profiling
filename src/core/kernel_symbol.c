@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "kernel_symbol.h"
+#include "../../include/kernel_symbol.h"
 
 // 定义 kallsyms 文件路径
 #define KALLSYMS_PATH "/proc/kallsyms"
