@@ -18,9 +18,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <elf.h>
-#include <time.h>
+#include <sys/time.h>
+#include <unistd.h>
 
-#include "../../include/header.h"
+#include "include/header.h"
 
 /**
  * @brief 初始化系统全局上下文
