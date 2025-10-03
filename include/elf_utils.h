@@ -1,7 +1,7 @@
 #ifndef ELF_UTILS_H
 #define ELF_UTILS_H
 
-#include "header.h"
+#include "include/header.h"
 
 // 查找或创建ELF文件对象
 struct elf_file* find_or_create_elf(struct system_context* sys, int pid, const char *filename);
