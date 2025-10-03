@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include "../../include/mempool.h"
+#include "include/mempool.h"
 
 /**
  * @brief 创建并初始化一个新的内存池。
