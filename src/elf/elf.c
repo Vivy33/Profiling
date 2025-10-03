@@ -31,8 +31,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "../include/header.h"
-#include "elf_utils.h"
+#include "include/header.h"
+#include "include/elf_utils.h"
 
 #define PATH_MAX 4096
 
