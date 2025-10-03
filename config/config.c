@@ -25,7 +25,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../include/config.h"
+
+#include "include/config.h"
+#include "include/database.h"
 
 /**
  * @brief 打印程序使用说明
@@ -36,10 +38,12 @@ void print_usage(const char* program_name) {
     printf("Options:\n");
     printf("  --frequency=NUM    Sampling frequency in Hz (default: %d)\n", DEFAULT_SAMPLING_FREQUENCY);
     printf("  --db-batch-size=NUM  Batch size for database writes (default: %d)\n", DEFAULT_DB_BATCH_SIZE);
+    printf("  --producer-batch-size=NUM  Batch size for producer to push to queue (default: %d)\n", DEFAULT_PRODUCER_BATCH_SIZE);
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
     printf("  --sample-pool-size=NUM  Set the number of objects in the sample pool (default: %d)\n", DEFAULT_SAMPLE_POOL_SIZE);
+    printf("  --db-entry-pool-size=NUM Set the number of objects in the database entry pool (default: %d)\n", DEFAULT_DB_ENTRY_POOL_SIZE);
     printf("  --output-dir=PATH  Directory for SQLite database storage (default: /tmp)\n");
     printf("  --http-port=NUM    HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
     printf("  --log-dir=PATH     Directory for program logs (default: /log)\n");
@@ -69,6 +73,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->histogram_print_threshold = DEFAULT_HISTOGRAM_PRINT_THRESHOLD;
     config->histogram_log_path = NULL; // 初始化为NULL
     config->db_batch_size = DEFAULT_DB_BATCH_SIZE; // Default batch size
+    config->producer_batch_size = DEFAULT_PRODUCER_BATCH_SIZE; // Default producer batch size
+    config->db_entry_pool_size = DEFAULT_DB_ENTRY_POOL_SIZE; // Default db entry pool size
     
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--frequency=", 12) == 0) {
@@ -144,6 +150,23 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
             config->db_batch_size = atoi(argv[i] + 16);
             if (config->db_batch_size <= 0) {
                 fprintf(stderr, "Error: Invalid db batch size\n");
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--producer-batch-size=", 22) == 0) {
+            config->producer_batch_size = atoi(argv[i] + 22);
+            if (config->producer_batch_size <= 0) {
+                fprintf(stderr, "Error: Invalid producer batch size\n");
+                return -1;
+            }
+            if (config->producer_batch_size > MAX_PRODUCER_BATCH_SIZE) {
+                fprintf(stderr, "Error: producer_batch_size (%d) cannot exceed the maximum limit (%d).\n",
+                        config->producer_batch_size, MAX_PRODUCER_BATCH_SIZE);
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--db-entry-pool-size=", 21) == 0) {
+            config->db_entry_pool_size = atoi(argv[i] + 21);
+            if (config->db_entry_pool_size <= 0) {
+                fprintf(stderr, "Error: Invalid db entry pool size\n");
                 return -1;
             }
         } else if (strcmp(argv[i], "--help") == 0) {
