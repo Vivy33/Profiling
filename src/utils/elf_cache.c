@@ -1,12 +1,12 @@
-#include "elf_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "../../include/elf_cache.h"
 
 // 全局ELF缓存管理器
 struct elf_cache_manager global_elf_cache = {0};
