@@ -78,7 +78,7 @@ void mempool_destroy(struct mempool_s *mp) {
  *
  * 该函数首先锁定互斥锁，然后检查池中是否还有可用的内存块。如果有，
  * 它会像从栈顶弹出一个元素一样，返回最后一个可用的内存块，并减少计数。
- * 如果池已空，它会返回NULL，由调用者决定如何处理（例如，可以直接`malloc`）。
+ * 如果池已空，它会回退到 malloc，以避免丢样本。
  *
  * @param mp 内存池的指针。
  * @return 成功时返回一个指向内存块的指针，如果池已空则返回NULL。
@@ -88,10 +88,9 @@ void *mempool_alloc(struct mempool_s *mp) {
 
     pthread_mutex_lock(&mp->lock);
     if (mp->count == 0) {
-        // 如果内存池已空，解锁并返回NULL。
-        // 让调用者决定是等待还是直接malloc新内存。
+        // 内存池耗尽时，回退到动态分配，避免丢样本。
         pthread_mutex_unlock(&mp->lock);
-        return NULL; // Pool is empty
+        return malloc(mp->chunk_size);
     }
 
     // 从“栈顶”取出一个内存块指针
