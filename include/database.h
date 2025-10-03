@@ -5,7 +5,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "config.h"
+#include "include/config.h"
+
+// 定义生产者批处理缓冲区的物理大小上限
+#define MAX_PRODUCER_BATCH_SIZE 4096
 
 // 前向声明 sqlite3 结构体，避免在头文件中引入整个 sqlite3.h
 struct sqlite3;
