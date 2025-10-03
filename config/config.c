@@ -39,6 +39,7 @@ void print_usage(const char* program_name) {
     printf("  --filter=MODE      Display filter: user|kernel|all (default: all)\n");
     printf("  --cleanup=SEC      Cleanup interval in seconds (default: %d)\n", DEFAULT_CLEANUP_INTERVAL);
     printf("  --stack-depth=NUM  Set max stack backtrace depth (default: %d)\n", DEFAULT_MAX_STACK_DEPTH);
+    printf("  --sample-pool-size=NUM  Set the number of objects in the sample pool (default: %d)\n", DEFAULT_SAMPLE_POOL_SIZE);
     printf("  --output-dir=PATH  Directory for SQLite database storage (default: /tmp)\n");
     printf("  --http-port=NUM    HTTP server listening port (default: %d)\n", DEFAULT_HTTP_PORT);
     printf("  --log-dir=PATH     Directory for program logs (default: /log)\n");
@@ -60,12 +61,13 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
     config->filter_mode = FILTER_ALL;
     config->cleanup_interval = DEFAULT_CLEANUP_INTERVAL;
     config->max_stack_depth = DEFAULT_MAX_STACK_DEPTH;
+    config->sample_pool_size = DEFAULT_SAMPLE_POOL_SIZE;
     config->use_lbr = false;
     config->db_output_dir = DEFAULT_DB_DIR;
     config->http_port = DEFAULT_HTTP_PORT; // 设置默认HTTP端口
     config->log_output_dir = DEFAULT_LOG_DIR;
     config->histogram_print_threshold = DEFAULT_HISTOGRAM_PRINT_THRESHOLD;
-    config->histogram_log_path = DEFAULT_HISTOGRAM_LOG_PATH;
+    config->histogram_log_path = NULL; // 初始化为NULL
     config->db_batch_size = DEFAULT_DB_BATCH_SIZE; // Default batch size
     
     for (int i = 1; i < argc; i++) {
@@ -86,6 +88,12 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
                 config->filter_mode = FILTER_ALL;
             } else {
                 fprintf(stderr, "Error: Invalid filter mode '%s'. Use user|kernel|all\n", mode);
+                return -1;
+            }
+        } else if (strncmp(argv[i], "--sample-pool-size=", 19) == 0) {
+            config->sample_pool_size = atoi(argv[i] + 19);
+            if (config->sample_pool_size <= 0) {
+                fprintf(stderr, "Error: Invalid sample pool size\n");
                 return -1;
             }
         } else if (strncmp(argv[i], "--stack-depth=", 14) == 0) {
@@ -114,8 +122,8 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
                 fprintf(stderr, "Error: Failed to allocate memory for log_output_dir\n");
                 return -1;
             }
-        } else if (strncmp(argv[i], "--histogram-log-path=", 22) == 0) {
-            const char* path = argv[i] + 22;
+        } else if (strncmp(argv[i], "--histogram-log-path=", 21) == 0) {
+            const char* path = argv[i] + 21;
             if (config->histogram_log_path) {
                 free(config->histogram_log_path);
             }
@@ -148,6 +156,11 @@ int parse_command_line(int argc, char* argv[], struct profiling_config* config) 
         }
     }
     
+    // 如果未通过命令行设置，则使用默认值
+    if (!config->histogram_log_path) {
+        config->histogram_log_path = strdup(DEFAULT_HISTOGRAM_LOG_PATH);
+    }
+
     return 0;
 }
 
