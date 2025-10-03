@@ -17,10 +17,13 @@ TIMER_NAME="profiling-cleanup"
 DEFAULT_DB_DIR="$SCRIPT_DIR/tmp"
 DEFAULT_LOG_DIR="$SCRIPT_DIR/log"
 DEFAULT_FREQUENCY=30
+DEFAULT_CLEANUP_INTERVAL=30
 DAYS_TO_KEEP=7
 DEFAULT_HTTP_PORT=8081
-DEFAULT_DB_BATCH_SIZE=40
+DEFAULT_DB_BATCH_SIZE=96
+DEFAULT_PRODUCER_BATCH_SIZE=96
 DEFAULT_SAMPLE_POOL_SIZE=99297
+DEFAULT_DB_ENTRY_POOL_SIZE=8192
 DEFAULT_HISTOGRAM_LOG_PATH="$SCRIPT_DIR/log/histogram.log"
 PROFILING_TOOL="$SCRIPT_DIR/profiling_tool"
 QUERY_TOOL="$SCRIPT_DIR/query_tool"
@@ -48,7 +51,9 @@ ${YELLOW}start命令选项:${NC}
   --cleanup SEC       清理内存间隔秒数 (默认: 30)
   --stack-depth NUM   最大栈深度 (默认: 48)
   --db-batch-size NUM 数据库写入批处理大小 (默认: $DEFAULT_DB_BATCH_SIZE)
+  --producer-batch-size NUM 生产者批处理大小 (默认: $DEFAULT_PRODUCER_BATCH_SIZE)
   --sample-pool-size NUM 样本池大小 (默认: $DEFAULT_SAMPLE_POOL_SIZE)
+  --db-entry-pool-size NUM 数据库条目池大小 (默认: $DEFAULT_DB_ENTRY_POOL_SIZE)
   --http-port NUM     HTTP服务端口 (默认: $DEFAULT_HTTP_PORT)
   --log-dir PATH      日志目录 (默认: $DEFAULT_LOG_DIR)
   --histogram-log-path PATH 直方图日志路径 (默认: $DEFAULT_HISTOGRAM_LOG_PATH)
@@ -83,10 +88,12 @@ start_profiling() {
     local db_dir="$DEFAULT_DB_DIR"
     local frequency="$DEFAULT_FREQUENCY"
     local filter="all"
-    local cleanup_secs="30"
+    local cleanup_secs="$DEFAULT_CLEANUP_INTERVAL"
     local stack_depth="48"
     local db_batch_size="$DEFAULT_DB_BATCH_SIZE"
+    local producer_batch_size="$DEFAULT_PRODUCER_BATCH_SIZE"
     local sample_pool_size="$DEFAULT_SAMPLE_POOL_SIZE"
+    local db_entry_pool_size="$DEFAULT_DB_ENTRY_POOL_SIZE"
     local http_port="$DEFAULT_HTTP_PORT"
     local log_dir="$DEFAULT_LOG_DIR"
     local histogram_log_path="$DEFAULT_HISTOGRAM_LOG_PATH"
@@ -119,8 +126,16 @@ start_profiling() {
                 db_batch_size="$2"
                 shift 2
                 ;;
+            --producer-batch-size)
+                producer_batch_size="$2"
+                shift 2
+                ;;
             --sample-pool-size)
                 sample_pool_size="$2"
+                shift 2
+                ;;
+            --db-entry-pool-size)
+                db_entry_pool_size="$2"
                 shift 2
                 ;;
             --http-port)
@@ -169,38 +184,48 @@ start_profiling() {
     rm -f "$histogram_log_path" "$log_file" "$log_dir/profiling_tool.log"
 
     # 构建命令
-    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth --db-batch-size=$db_batch_size --sample-pool-size=$sample_pool_size $lbr --http-port=$http_port --log-dir=$log_dir --histogram-log-path=$histogram_log_path"
+    local cmd="$PROFILING_TOOL --output-dir=$db_dir --frequency=$frequency --filter=$filter --cleanup=$cleanup_secs --stack-depth=$stack_depth --db-batch-size=$db_batch_size --producer-batch-size=$producer_batch_size --sample-pool-size=$sample_pool_size --db-entry-pool-size=$db_entry_pool_size $lbr --http-port=$http_port --log-dir=$log_dir --histogram-log-path=$histogram_log_path"
 
     # 记录到日志文件
     {
         echo "启动配置:"
-        printf "  %-22s: %s\n" "日志目录" "${log_dir}"
-        printf "  %-22s: %s\n" "数据目录" "${db_dir}"
-        printf "  %-22s: %s Hz\n" "采样频率" "${frequency}"
-        printf "  %-22s: %s\n" "过滤模式" "${filter}"
-        printf "  %-22s: %s 秒\n" "清理间隔" "${cleanup_secs}"
-        printf "  %-22s: %s 层\n" "最大栈深" "${stack_depth}"
-        printf "  %-23s: %s\n" "批处理大小" "${db_batch_size}"
-        printf "  %-23s: %s\n" "样本池大小" "${sample_pool_size}"
-        printf "  %-22s: %s\n" "HTTP服务端口" "${http_port}"
-        printf "  %-25s: %s\n" "直方图日志路径" "${histogram_log_path}"
-        [[ -n "$lbr" ]] && printf "  %-21s: 启用\n" "LBR模式"
+        {
+            printf "%s\n" \
+                "日志目录: ${log_dir}" \
+                "数据目录: ${db_dir}" \
+                "采样频率: ${frequency} Hz" \
+                "过滤模式: ${filter}" \
+                "清理间隔: ${cleanup_secs} 秒" \
+                "最大栈深: ${stack_depth} 层" \
+                "DB写入批处理大小: ${db_batch_size}" \
+                "生产者批处理大小: ${producer_batch_size}" \
+                "样本池大小: ${sample_pool_size}" \
+                "数据库条目池大小: ${db_entry_pool_size}" \
+                "HTTP服务端口: ${http_port}" \
+                "直方图日志路径: ${histogram_log_path}"
+            [[ -n "$lbr" ]] && printf "%s\n" "LBR模式: 启用"
+        } | ( command -v column >/dev/null 2>&1 && column -t -s ':' || cat )
         echo
     } > "$log_file"
 
     # 打印到控制台
     printf "${GREEN}启动配置:${NC}\n"
-    printf "  %-22s: %s\n" "日志目录" "${log_dir}"
-    printf "  %-22s: %s\n" "数据目录" "${db_dir}"
-    printf "  %-22s: %s Hz\n" "采样频率" "${frequency}"
-    printf "  %-22s: %s\n" "过滤模式" "${filter}"
-    printf "  %-22s: %s 秒\n" "清理间隔" "${cleanup_secs}"
-    printf "  %-22s: %s 层\n" "最大栈深" "${stack_depth}"
-    printf "  %-23s: %s\n" "批处理大小" "${db_batch_size}"
-    printf "  %-23s: %s\n" "样本池大小" "${sample_pool_size}"
-    printf "  %-22s: %s\n" "HTTP服务端口" "${http_port}"
-    printf "  %-25s: %s\n" "直方图日志路径" "${histogram_log_path}"
-    [[ -n "$lbr" ]] && printf "  %-21s: 启用\n" "LBR模式"
+    {
+        printf "%s\n" \
+            "日志目录: ${log_dir}" \
+            "数据目录: ${db_dir}" \
+            "采样频率: ${frequency} Hz" \
+            "过滤模式: ${filter}" \
+            "清理间隔: ${cleanup_secs} 秒" \
+            "最大栈深: ${stack_depth} 层" \
+            "DB写入批处理大小: ${db_batch_size}" \
+            "生产者批处理大小: ${producer_batch_size}" \
+            "样本池大小: ${sample_pool_size}" \
+            "数据库条目池大小: ${db_entry_pool_size}" \
+            "HTTP服务端口: ${http_port}" \
+            "直方图日志路径: ${histogram_log_path}"
+        [[ -n "$lbr" ]] && printf "%s\n" "LBR模式: 启用"
+    } | ( command -v column >/dev/null 2>&1 && column -t -s ':' || cat )
     printf "\n"
 
     # 检查是否以root权限运行
