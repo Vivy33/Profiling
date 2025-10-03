@@ -25,11 +25,11 @@
 // 内核默认栈深度通常不超过127，我们这里设置一个安全的上限。
 #define MAX_STACK_DEPTH_COPY 128
 
-#include "rbtree.h"
-#include "hash.h"
-#include "perf.h"
-#include "kernel_symbol.h"
-#include "concurrent_queue.h"
+#include "include/rbtree.h"
+#include "include/hash.h"
+#include "include/perf.h"
+#include "include/kernel_symbol.h"
+#include "include/concurrent_queue.h"
 
 #define READ 0x1
 #define WRITE 0x2
