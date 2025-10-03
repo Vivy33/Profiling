@@ -231,10 +231,10 @@ int main(int argc, char* argv[]) {
     system_info.db_context = db_context;
 
     // 初始化sample内存池，用于存储从perf事件中解析出的原始样本数据。
-    // 预分配10240个样本空间，以减少在高并发采样时频繁的malloc/free开销。
-    // 一个 struct raw_sample 对象的大小约为 1056 字节（ 8*4 + 128*8 ）。
-    // 10240 个样本占用的内存大约是 10240 * 1056 ≈ 10.3 MB
-    system_info.sample_pool = mempool_create(10240, sizeof(struct raw_sample));
+    // 预分配约100MB（99297个对象 * 每个约1056字节）的内存池，用于存储原始样本数据。
+    // 这有助于减少在高采样率下频繁 malloc/free 带来的性能开销。
+    // 一个 struct raw_sample 对象的大小约为 1056 字节（ 8*4 + 128*8, 字段约 32 字节 + ips[MAX_STACK_DEPTH_COPY]）。
+    system_info.sample_pool = mempool_create(global_config.sample_pool_size, sizeof(struct raw_sample));
     if (!system_info.sample_pool) {
         fprintf(stderr, "Error: Failed to create sample memory pool\n");
         perf_event_cleanup_manager(manager);
