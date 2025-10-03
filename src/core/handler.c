@@ -25,11 +25,11 @@
 #include <string.h>
 #include <pthread.h>
 
-#include "../../include/header.h"
-#include "../../include/config.h"
-#include "../../include/database.h"
-#include "../../include/concurrent_queue.h"
-#include "../../include/mempool.h"
+#include "include/header.h"
+#include "include/config.h"
+#include "include/database.h"
+#include "include/concurrent_queue.h"
+#include "include/mempool.h"
 
 // PERF_CONTEXT_MAX 是有效IP地址的上限。
 // 超过此值的地址是上下文标记。此值来自内核UAPI
