@@ -69,7 +69,19 @@ void* queue_pop(concurrent_queue_t* queue);
  * @param max_items 要弹出的最大元素数量。
  * @return 实际弹出的元素数量。如果队列被关闭且为空，则返回 0。
  */
-int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items);
+int queue_pop_batch(concurrent_queue_t* queue, void** items, int max_items, long long *latency_ns);
+
+/**
+ * @brief 向队列中批量推送一组元素（生产者）。
+ *
+ * 此函数为原子操作。如果队列容量不足以容纳所有元素，函数会阻塞，
+ * 直到有足够空间或队列被关闭。
+ *
+ * @param q 队列的指针。
+ * @param items 要添加到队列中的元素数组的指针。
+ * @param count 要推送的元素数量。
+ */
+void queue_push_batch(concurrent_queue_t* queue, void** items, int count, long long *latency_ns);
 
 /**
  * @brief 向队列发送关闭信号。
