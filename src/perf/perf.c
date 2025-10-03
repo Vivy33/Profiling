@@ -29,8 +29,8 @@
 #include <sched.h>
 #include <stdatomic.h>
 
-#include "../include/perf.h"
-#include "../include/config.h"
+#include "include/perf.h"
+#include "include/config.h"
 
 /**
  * @brief perf_event_open系统调用的封装函数
