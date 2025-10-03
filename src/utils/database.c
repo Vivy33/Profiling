@@ -6,14 +6,20 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <errno.h>
-#include "../../include/database.h"
-#include "../../include/concurrent_queue.h"
-#include "../../include/config.h"
+#include "include/database.h"
+#include "include/concurrent_queue.h"
+#include "include/config.h"
+#include "include/mempool.h"
 
-// Latency histogram
+// 推入操作的延迟直方图
 #define NUM_LATENCY_BUCKETS 10
-static long long latency_buckets[NUM_LATENCY_BUCKETS] = {0};
+static long long push_latency_buckets[NUM_LATENCY_BUCKETS] = {0};
 static long long push_count = 0;
+
+// 弹出操作的延迟直方图
+static long long pop_latency_buckets[NUM_LATENCY_BUCKETS] = {0};
+static long long pop_count = 0;
+
 static const long long bucket_thresholds[NUM_LATENCY_BUCKETS] = {
     1000,    // < 1 us
     5000,    // < 5 us
@@ -61,11 +67,71 @@ struct db_writer_context_t {
     struct sqlite3 *db;             /**< 当前打开的 SQLite 数据库句柄 */
     char current_db_path[256];      /**< 当前正在写入的数据库文件的路径 */
     const struct profiling_config *config; /**< Profiling configuration */
+    struct mempool_s *entry_pool;    /**< 内存池，用于分配 db_entry_t */
 };
 
 // 静态函数声明
 static int ensure_db_handle(db_writer_context_t *context, uint64_t timestamp_ns);
 static void *db_writer_thread_func(void *arg);
+
+// 为生产者批处理定义静态缓冲区和计数器
+static db_entry_t* producer_batch_buffer[MAX_PRODUCER_BATCH_SIZE];
+static int producer_batch_count = 0;
+
+/**
+ * @brief 将生产者缓冲区中剩余的数据项刷入队列。
+ *
+ * 这是一个辅助函数，用于在缓冲区满或程序退出时，
+ * 将缓冲区中所有待处理的数据项通过一次 queue_push_batch 调用推入队列。
+ *
+ * @param context 数据库写入器上下文指针。
+ */
+static void db_writer_flush(db_writer_context_t *context) {
+    if (producer_batch_count > 0) {
+        long long push_latency_ns = 0;
+        int queue_size_before_push = queue_get_size(context->queue);
+        // 时间过长说明出现锁等待
+        queue_push_batch(context->queue, (void**)producer_batch_buffer, producer_batch_count, &push_latency_ns);
+        producer_batch_count = 0;
+
+        fprintf(stderr, "DEBUG: queue_push_batch latency: %lld ns, queue size before push: %d\n", push_latency_ns, queue_size_before_push);
+
+        for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+            if (bucket_thresholds[i] == -1 || push_latency_ns < bucket_thresholds[i]) {
+                push_latency_buckets[i]++;
+                break;
+            }
+        }
+
+        push_count++;
+        if (push_count >= context->config->histogram_print_threshold) {
+            FILE *log_file = fopen(context->config->histogram_log_path, "a");
+            if (log_file) {
+                time_t now;
+                time(&now);
+                char time_buf[32];
+                strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+                fprintf(log_file, "[%s] Queue push BATCH latency histogram (ns):\n", time_buf);
+                for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+                    if (bucket_thresholds[i] == -1) {
+                        fprintf(log_file, "    > %lld ns: %lld\n", bucket_thresholds[i-1], push_latency_buckets[i]);
+                    } else {
+                        fprintf(log_file, "    < %lld ns: %lld\n", bucket_thresholds[i], push_latency_buckets[i]);
+                    }
+                }
+                fprintf(log_file, "\n");
+                fclose(log_file);
+                fprintf(stderr, "DEBUG: Histogram written to %s\n", context->config->histogram_log_path);
+            } else {
+                fprintf(stderr, "ERROR: Could not open histogram log file %s: %s\n", context->config->histogram_log_path, strerror(errno));
+            }
+
+            memset(push_latency_buckets, 0, sizeof(push_latency_buckets));
+            push_count = 0;
+        }
+    }
+}
 
 /**
  * @brief 初始化数据库写入器上下文。
@@ -110,6 +176,30 @@ db_writer_context_t* db_writer_init(const struct profiling_config *config) {
     context->current_db_path[0] = '\0';
     context->config = config;
 
+    // 初始化内存池
+    // 每个条目的大小需要足够容纳 db_entry_t 结构体以及最长的可能调用栈字符串。
+    // 一个符号最长按256字节计算，加上分隔符，总长度为 max_stack_depth * 257
+    size_t max_stack_str_len = config->max_stack_depth * 257;
+    size_t entry_size = sizeof(db_entry_t) + max_stack_str_len;
+
+    // 详细计算 entry_size:
+    // - sizeof(db_entry_t) 通常是 16 字节 (取决于具体的结构体定义和对齐方式)。
+    // - config->max_stack_depth 的默认值是 48 (DEFAULT_MAX_STACK_DEPTH)。
+    // - max_stack_str_len = 48 * 257 = 12336 字节。
+    // - entry_size = 16 + 12336 = 12352 字节，约等于 12KB。
+    //
+    // 内存池总大小计算:
+    // - config->db_entry_pool_size 的默认值是 8192 (DEFAULT_DB_ENTRY_POOL_SIZE)。
+    // - 总大小 = 8192 * 12352 字节 = 101,185,536 字节 ≈ 96.5MB。
+    context->entry_pool = mempool_create(config->db_entry_pool_size, entry_size);
+    if (!context->entry_pool) {
+        fprintf(stderr, "无法创建数据库条目内存池\n");
+        queue_destroy(context->queue);
+        free(context->output_dir);
+        free(context);
+        return NULL;
+    }
+
     return context;
 }
 
@@ -139,6 +229,8 @@ void db_writer_start(db_writer_context_t *context) {
 void db_writer_stop(db_writer_context_t *context) {
     if (!context) return;
     context->running = false;
+    // 刷入所有剩余的条目
+    db_writer_flush(context);
     queue_signal_shutdown(context->queue);
 }
 
@@ -159,16 +251,17 @@ void db_writer_wait(db_writer_context_t *context) {
     // 清理队列中可能剩余的元素
     void* item;
     while((item = queue_pop(context->queue)) != NULL) {
-        db_entry_t *entry = (db_entry_t *)item;
-        free(entry->stack_str);
-        free(entry);
+        // 由于使用了内存池，这里不再需要手动释放
+        // free(((db_entry_t *)item)->stack_str);
+        // free(item);
     }
     queue_destroy(context->queue);
+    mempool_destroy(context->entry_pool); // 销毁内存池
     free(context);
 }
 
 /**
- * @brief 将调用栈数据推送到数据库写入队列。
+ * @brief 将一批数据条目安全地推入数据库写入器的队列中。
  *
  * 将时间戳和调用栈字符串封装成 db_entry_t 结构体，并推送到并发队列中。
  *
@@ -178,66 +271,30 @@ void db_writer_wait(db_writer_context_t *context) {
  */
 void db_writer_push_stack(db_writer_context_t *context, uint64_t timestamp_ns, const char *stack_str) {
     if (!context || !context->running) return;
-    
-    db_entry_t *entry = malloc(sizeof(db_entry_t));
-    if (!entry) return;
 
-    entry->stack_str = strdup(stack_str);
-    if (!entry->stack_str) {
-        free(entry);
+    size_t stack_len = strlen(stack_str);
+    // 从内存池分配一个能容纳 db_entry_t 和 stack_str 的连续块
+    db_entry_t *entry = (db_entry_t *)mempool_alloc(context->entry_pool);
+    if (!entry) {
+        fprintf(stderr, "从内存池分配失败\n");
         return;
     }
     
-    // get start time
     entry->timestamp_ns = timestamp_ns;
-    // fprintf(stderr, "DEBUG: db_writer_push_stack: Pushing timestamp_ns = %lu\n", timestamp_ns);
-    
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    // get end time
-    // 如果时间过长说明出现了锁等待
-    queue_push(context->queue, entry);
+    // 将字符串数据紧随 db_entry_t 之后存储
+    entry->stack_str = (char *)(entry + 1);
+    memcpy(entry->stack_str, stack_str, stack_len + 1);
 
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    long long elapsed_ns = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec);
-    
-    int queue_size = queue_get_size(context->queue);
-    fprintf(stderr, "DEBUG: queue_push latency: %lld ns, queue size: %d\n", elapsed_ns, queue_size);
+    // 将条目添加到生产者缓冲区
+    producer_batch_buffer[producer_batch_count++] = entry;
 
-    for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
-        if (bucket_thresholds[i] == -1 || elapsed_ns < bucket_thresholds[i]) {
-            latency_buckets[i]++;
-            break;
-        }
+    // 根据配置的生产者批处理阈值进行刷入；同时遵守物理上限以避免越界
+    int flush_threshold = context->config->producer_batch_size;
+    if (flush_threshold <= 0 || flush_threshold > MAX_PRODUCER_BATCH_SIZE) {
+        flush_threshold = MAX_PRODUCER_BATCH_SIZE;
     }
-
-    push_count++;
-    if (push_count >= context->config->histogram_print_threshold) {
-        // 当达到阈值时，将直方图写入独立日志文件
-        FILE *log_file = fopen(context->config->histogram_log_path, "a");
-        if (log_file) {
-            time_t now;
-            time(&now);
-            char time_buf[32];
-            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
-
-            fprintf(log_file, "[%s] Queue push latency histogram (ns):\n", time_buf);
-            for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
-                if (bucket_thresholds[i] == -1) {
-                    fprintf(log_file, "    > %lld ns: %lld\n", bucket_thresholds[i-1], latency_buckets[i]);
-                } else {
-                    fprintf(log_file, "    < %lld ns: %lld\n", bucket_thresholds[i], latency_buckets[i]);
-                }
-            }
-            fprintf(log_file, "\n");
-            fclose(log_file);
-            fprintf(stderr, "DEBUG: Histogram written to %s\n", context->config->histogram_log_path);
-        } else {
-            fprintf(stderr, "ERROR: Could not open histogram log file %s: %s\n", context->config->histogram_log_path, strerror(errno));
-        }
-
-        memset(latency_buckets, 0, sizeof(latency_buckets));
-        push_count = 0;
+    if (producer_batch_count > 0 && producer_batch_count >= flush_threshold) {
+        db_writer_flush(context);
     }
 }
 
@@ -304,6 +361,13 @@ static int ensure_db_handle(db_writer_context_t *context, uint64_t timestamp_ns)
         context->db = NULL;
         return -1;
     }
+
+    // 为 timestamp 创建索引
+    const char *sql_index = "CREATE INDEX IF NOT EXISTS idx_timestamp ON call_stacks (timestamp);";
+    if (sqlite3_exec(context->db, sql_index, 0, 0, &err_msg) != SQLITE_OK) {
+        fprintf(stderr, "SQL 错误 (创建索引失败): %s\n", err_msg);
+        sqlite3_free(err_msg);
+    }
     fprintf(stderr, "DEBUG: Table created or already exists.\n");
     return 0;
 }
@@ -337,7 +401,21 @@ static void *db_writer_thread_func(void *arg) {
     while (context->running || queue_get_size(context->queue) > 0) {
         // 从队列中批量弹出一批数据项
         // 这是一个阻塞操作，直到有数据或队列关闭
-        int count = queue_pop_batch(context->queue, (void**)batch, batch_size);
+        long long pop_latency_ns = 0;
+        int count = queue_pop_batch(context->queue, (void**)batch, batch_size, &pop_latency_ns);
+
+        if (count > 0) {
+            fprintf(stderr, "DEBUG: queue_pop_batch latency: %lld ns, count: %d\n", pop_latency_ns, count);
+        }
+
+        // 更新 pop 延迟直方图
+        for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+            if (bucket_thresholds[i] == -1 || pop_latency_ns < bucket_thresholds[i]) {
+                pop_latency_buckets[i]++;
+                break;
+            }
+        }
+        pop_count++;
 
         // 如果没有弹出任何数据
         if (count == 0) {
@@ -350,7 +428,29 @@ static void *db_writer_thread_func(void *arg) {
             continue;
         }
 
-        fprintf(stderr, "DEBUG: Processing batch, count: %d\n", count);
+        // 如果达到阈值，则打印 pop 延迟直方图
+        if (pop_count >= context->config->histogram_print_threshold) {
+            FILE *log_file = fopen(context->config->histogram_log_path, "a");
+            if (log_file) {
+                time_t now;
+                time(&now);
+                char time_buf[32];
+                strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+                fprintf(log_file, "[%s] Queue pop BATCH latency histogram (ns):\n", time_buf);
+                for (int i = 0; i < NUM_LATENCY_BUCKETS; ++i) {
+                    if (bucket_thresholds[i] == -1) {
+                        fprintf(log_file, "    > %lld ns: %lld\n", bucket_thresholds[i-1], pop_latency_buckets[i]);
+                    } else {
+                        fprintf(log_file, "    < %lld ns: %lld\n", bucket_thresholds[i], pop_latency_buckets[i]);
+                    }
+                }
+                fprintf(log_file, "\n");
+                fclose(log_file);
+            }
+            memset(pop_latency_buckets, 0, sizeof(pop_latency_buckets));
+            pop_count = 0;
+        }
 
         // 使用批次中的第一个数据项的时间戳来确保数据库句柄有效
         // 这会处理按小时轮换数据库文件的逻辑
@@ -418,19 +518,20 @@ static void *db_writer_thread_func(void *arg) {
             // 重置语句以便下一次循环使用
             sqlite3_reset(stmt);
 
-            // 释放已处理数据项的内存
-            free(entry->stack_str);
-            free(entry);
+            // 内存将由批处理循环结束后的 mempool_free 统一释放
         }
 
         // 如果批次被成功处理（或部分处理），提交事务
         if (count > 0) {
             sqlite3_exec(context->db, "COMMIT;", 0, 0, 0);
-            fprintf(stderr, "DEBUG: Transaction committed.\n");
         }
         // 释放 SQL 语句句柄
         sqlite3_finalize(stmt);
-        stmt = NULL;
+
+        // 释放从队列中取出的所有条目
+        for (int i = 0; i < count; ++i) {
+            mempool_free(context->entry_pool, batch[i]);
+        }
     }
 
     // 释放为批处理分配的内存缓冲区
