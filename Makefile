@@ -1,11 +1,11 @@
 CC = gcc
-CFLAGS = -fno-omit-frame-pointer -g -O2 -Wall -I. -I include
+CFLAGS = -fno-omit-frame-pointer -g -O2 -Wall -I.
 LDFLAGS_READER = -lelf -lsqlite3 -lpthread -lmicrohttpd -lcjson
 LDFLAGS_QUERY = -lsqlite3 -lcurl -lcjson
 
 # Enable AddressSanitizer/UndefinedSanitizer when SANITIZE=1
 ifeq ($(SANITIZE),1)
-CFLAGS := -fno-omit-frame-pointer -g -O1 -Wall -I. -I include -fsanitize=address -fsanitize=undefined
+CFLAGS := -fno-omit-frame-pointer -g -O1 -Wall -I. -fsanitize=address -fsanitize=undefined
 LDFLAGS_READER += -fsanitize=address -fsanitize=undefined
 LDFLAGS_QUERY += -fsanitize=address -fsanitize=undefined
 # Helpful ASAN options; can be adjusted per need
